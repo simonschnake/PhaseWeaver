@@ -9,7 +9,7 @@ def apply_mpl_style() -> None:
     """
     Apply the bundled matplotlib style sheet.
     """
-    style_ref = resources.files("current_predict").joinpath("stylelib/vscode_dark.mplstyle")
+    style_ref = resources.files("phase_weaver").joinpath("stylelib/vscode_dark.mplstyle")
     with resources.as_file(style_ref) as style_path:
         mplstyle.use(str(style_path))
 

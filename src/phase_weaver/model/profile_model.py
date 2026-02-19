@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import numpy as np
 
-from current_predict.core.grid import Grid
-from current_predict.core.profiles import AsymSuperGaussParams, asymmetric_super_gaussian
+from phase_weaver.core.grid import Grid
+from phase_weaver.core.profiles import AsymSuperGaussParams, asymmetric_super_gaussian
 
 
 def _default_background() -> AsymSuperGaussParams:
