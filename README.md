@@ -54,6 +54,3 @@ Uninstall:
 ```bash
 uv tool uninstall phase_weaver
 ```
-[project.scripts]
-phase_weaver = "current_predict.app:main"
-```
