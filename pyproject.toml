@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "PhaseWeaver"
+version = "0.1.0"
+description = "Predict the current profile"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "PySide6>=6.6",
+  "matplotlib>=3.8",
+  "numpy>=1.26",
+]
+
+[project.scripts]
+phase_weaver = "phase_weaver.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+phase_weaver = ["stylelib/*.mplstyle"]

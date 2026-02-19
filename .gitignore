@@ -1,0 +1,92 @@
+
+# --- Python bytecode / caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+.cache/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+.conda/
+.python-version
+
+# --- Packaging / build artifacts ---
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+*.whl
+MANIFEST
+
+# --- Coverage / test reports ---
+.coverage
+coverage.xml
+htmlcov/
+nosetests.xml
+junit*.xml
+
+# --- Logs ---
+*.log
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Editors / IDEs ---
+.vscode/
+.idea/
+*.iml
+
+# --- OS junk ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Qt / Designer ---
+*.ui.autosave
+*.qrc.depends
+
+# --- Matplotlib runtime cache ---
+.matplotlib/
+
+# --- Local outputs (exports / screenshots) ---
+*.png
+*.svg
+*.pdf
+exports/
+out/
+output/
+
+# --- uv tool / lock files ---
+# Keep uv.lock if you want reproducible environments for dev.
+# If you prefer, uncomment to ignore it.
+# uv.lock
+
+# --- PyInstaller ---
+*.spec
+pyinstaller/
+# Common default output folder name if you choose it:
+# PhaseWeaver/
+# current_predict/
+# (You already ignore dist/ and build/ above.)
+
+# --- Nuitka ---
+nuitka-crash-report.xml
+*.dist/
+*.build/
+*.onefile-build/
+*.onefile-dist/

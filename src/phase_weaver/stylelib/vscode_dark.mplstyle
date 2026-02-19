@@ -1,0 +1,44 @@
+# VS Code Dark Modern Matplotlib Style (fixed)
+
+# Backgrounds
+figure.facecolor       : "#1e1e1e"
+axes.facecolor         : "#1e1e1e"
+savefig.facecolor      : "#1e1e1e"
+
+# Layout and size (bigger for notebooks)
+figure.figsize         : 5, 4
+figure.dpi             : 200
+figure.autolayout      : True
+
+# Typography
+font.family            : sans-serif
+font.sans-serif        : Inter, DejaVu Sans, Segoe UI, Helvetica, Arial
+text.color             : "#ffffff"
+axes.labelcolor        : "#ffffff"
+xtick.color            : "#cccccc"
+ytick.color            : "#cccccc"
+axes.titlesize         : 15
+axes.labelsize         : 13
+xtick.labelsize        : 11
+ytick.labelsize        : 11
+legend.fontsize        : 11
+
+# Lines and markers
+lines.linewidth        : 2.2
+lines.markersize       : 6
+
+# Grid and axes
+axes.edgecolor         : "#bbbbbb"
+axes.grid              : True
+grid.color             : "#444444"
+grid.linestyle         : -
+grid.alpha             : 0.4
+
+# Legend
+legend.facecolor       : "#2b2b2b"
+legend.edgecolor       : "#444444"
+legend.frameon         : True
+legend.framealpha      : 0.9
+
+# Color cycle (soft but vivid tones)
+axes.prop_cycle        : cycler(color=["#4FC3F7", "#FFCA28", "#E57373", "#81C784", "#BA68C8", "#F06292"])
