@@ -54,12 +54,6 @@ Uninstall:
 ```bash
 uv tool uninstall phase_weaver
 ```
-
-## Entry point
-
-Make sure your `pyproject.toml` exposes the command name documented above:
-
-```toml
 [project.scripts]
 phase_weaver = "current_predict.app:main"
 ```
