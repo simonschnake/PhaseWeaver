@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import numpy as np
 
+from phase_weaver.core.current_profile import CurrentProfile
 from phase_weaver.core.grid import Grid
-from phase_weaver.core.profiles import AsymSuperGaussParams, asymmetric_super_gaussian
-
+from phase_weaver.profiles import AsymSuperGaussParams, asymmetric_super_gaussian
 
 def _default_background() -> AsymSuperGaussParams:
     return AsymSuperGaussParams(
@@ -30,6 +29,7 @@ def _default_peak() -> AsymSuperGaussParams:
 class ProfileModelState:
     dt: float = 1e-16
     t_max: float = 1e-13
+    charge: float | None = None
 
     background: AsymSuperGaussParams = field(default_factory=_default_background)
     peak: AsymSuperGaussParams = field(default_factory=_default_peak)
@@ -38,29 +38,17 @@ class ProfileModelState:
 class ProfileModel:
     def __init__(self, state: ProfileModelState | None = None):
         self.state = state or ProfileModelState()
-        self._grid: Grid | None = None
-        self._t: np.ndarray | None = None
-        self._grid_key: tuple[float, float] | None = None
+        self.grid = Grid.from_dt_tmax(dt=self.state.dt, t_max=self.state.t_max, snap_pow2=True, min_N=64)
 
-    def grid(self) -> Grid:
-        key = (self.state.dt, self.state.t_max)
-        if self._grid is None or self._grid_key != key:
-            self._grid = Grid.from_dt_tmax(dt=self.state.dt, t_max=self.state.t_max)
-            self._t = self._grid.t
-            self._grid_key = key
-        return self._grid
-
-    def compute_profile(self) -> tuple[np.ndarray, np.ndarray]:
-        _ = self.grid()
-        t = self._t
-        assert t is not None
+    def compute_profile(self) -> CurrentProfile: 
+        t = self.grid.t
 
         bg = self.state.background
         pk = self.state.peak
 
         bg.center = 0.0  # enforce background centered at 0
 
-        y = (
+        density = (
             asymmetric_super_gaussian(
                 t, center=bg.center, width=bg.width, skew=bg.skew, order=bg.order, amplitude=bg.amplitude
             )
@@ -68,4 +56,9 @@ class ProfileModel:
                 t, center=pk.center, width=pk.width, skew=pk.skew, order=pk.order, amplitude=pk.amplitude
             )
         )
-        return t, y
+
+        return CurrentProfile(
+            grid=self.grid,
+            values=density,
+            charge=self.state.charge
+        )

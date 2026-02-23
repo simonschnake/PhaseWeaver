@@ -74,7 +74,7 @@ output/
 # --- uv tool / lock files ---
 # Keep uv.lock if you want reproducible environments for dev.
 # If you prefer, uncomment to ignore it.
-# uv.lock
+uv.lock
 
 # --- PyInstaller ---
 *.spec

@@ -1,4 +1,5 @@
 import numpy as np
+
 from phase_weaver.core.grid import Grid
 
 
@@ -64,14 +65,16 @@ def _apply_time_constraints(
     return p
 
 
-def _min_phase_from_mag_pos(mag_pos: np.ndarray, N: int, eps: float = 1e-30) -> np.ndarray:
+def _min_phase_from_mag_pos(
+    mag_pos: np.ndarray, N: int, eps: float = 1e-30
+) -> np.ndarray:
     """
     Minimum-phase estimate from magnitude using real cepstrum (fast).
     Returns unwrapped phase for bins [0..Nyquist], length N/2+1.
     """
     mag_pos = np.asarray(mag_pos, dtype=float)
     if mag_pos.shape != (N // 2 + 1,):
-        raise ValueError(f"mag_pos must have length N/2+1 = {N//2+1}")
+        raise ValueError(f"mag_pos must have length N/2+1 = {N // 2 + 1}")
 
     logmag_pos = np.log(np.maximum(mag_pos, eps))
 
@@ -112,9 +115,9 @@ def reconstruct_current_from_mag(
     g: Grid,
     mag_pos: np.ndarray,
     *,
-    charge_C: float = 250e-12,        # 250 pC
+    charge_C: float = 250e-12,  # 250 pC
     n_iter: int = 60,
-    init_phase: str = "minphase",     # "minphase" | "zero" | "random"
+    init_phase: str = "minphase",  # "minphase" | "zero" | "random"
     enforce_dc_one: bool = True,
     enforce_nonneg: bool = True,
     normalize_area_to_one: bool = True,
@@ -133,7 +136,7 @@ def reconstruct_current_from_mag(
     """
     mag_pos = np.asarray(mag_pos, dtype=float)
     if mag_pos.shape != (g.N // 2 + 1,):
-        raise ValueError(f"mag_pos must have length N/2+1 = {g.N//2+1}")
+        raise ValueError(f"mag_pos must have length N/2+1 = {g.N // 2 + 1}")
 
     mag_pos = np.maximum(mag_pos, eps_mag)
 
@@ -161,7 +164,8 @@ def reconstruct_current_from_mag(
     # --- apply constraints to INITIAL time profile too ---
     p0 = _irfft_centered_from_pos(P_pos, g)
     p0 = _apply_time_constraints(
-        p0, g,
+        p0,
+        g,
         enforce_nonneg=enforce_nonneg,
         normalize_area_to_one=normalize_area_to_one,
         center=center,
@@ -188,7 +192,8 @@ def reconstruct_current_from_mag(
 
         # enforce constraints
         p = _apply_time_constraints(
-            p, g,
+            p,
+            g,
             enforce_nonneg=enforce_nonneg,
             normalize_area_to_one=normalize_area_to_one,
             center=center,
@@ -206,7 +211,8 @@ def reconstruct_current_from_mag(
     # Final time density + scale to current with requested charge
     p_final = _irfft_centered_from_pos(P_pos, g)
     p_final = _apply_time_constraints(
-        p_final, g,
+        p_final,
+        g,
         enforce_nonneg=enforce_nonneg,
         normalize_area_to_one=normalize_area_to_one,
         center=center,
