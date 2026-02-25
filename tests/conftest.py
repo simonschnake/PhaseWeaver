@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from phase_weaver.core.grid import Grid
+from phase_weaver.core import Grid
 
 @pytest.fixture
 def grid():

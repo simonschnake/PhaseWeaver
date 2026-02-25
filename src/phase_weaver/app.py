@@ -21,15 +21,13 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 
-from phase_weaver.core.transform import DCPhysicalRFFT
+from phase_weaver.core import DCPhysicalRFFT
+
+from phase_weaver.core.reconstruction import GSMagnitudeOnly
 from phase_weaver.qt_theme import set_dark_theme
 from phase_weaver.mpl_style import apply_mpl_style, sync_mpl_to_qt
 from phase_weaver.model.profile_model import ProfileModel, ProfileModelState
-#from phase_weaver.core.time_constraints import normalize_center_nonneg_density
-from phase_weaver.core.spectrum import normalize_mag_dc_to_one
-#from phase_weaver.core.spectrum import mag_phase_from_time, normalize_mag_dc_to_one
-from phase_weaver.core.reconstruction import reconstruct_current_from_mag
-
+from phase_weaver.core.constraints import CenterFirstMoment
 
 # -----------------------------
 # Constants / UI units
@@ -99,6 +97,11 @@ class MainWindow(QMainWindow):
                 charge=CHARGE_C,
             ))
 
+        self.center_prof = CenterFirstMoment()
+
+        # --- Reconstruction ---
+        self.reconstruction = GSMagnitudeOnly()
+
         # --- internal control registry for reset ---
         # maps (which, field) -> (slider, spin)
         self._controls: dict[tuple[str, str], tuple[QSlider, QDoubleSpinBox]] = {}
@@ -107,7 +110,7 @@ class MainWindow(QMainWindow):
         self._I_input = None  # charge-scaled input current (A)
         self._I_recon = None  # charge-scaled reconstructed current (A)
         self._mag_pos = None  # normalized mag (mag[0]=1)
-        self._phase_pos = None  # reconstructed phase used for plotting (rad)
+        self._phase_recon = None  # reconstructed phase used for plotting (rad)
         self._phase_in = None  # input phase (unwrapped) used for plotting (rad)
 
         # --- Plot ---
@@ -219,36 +222,27 @@ class MainWindow(QMainWindow):
 
         self._recon_in_progress = True
         try:
+            # 1) compute current profile from model
             prof = self.model.compute_profile()
+            self.center_prof.apply(prof)
 
-            # TODO: implement constraints
-            # 1) normalize/center/nonneg -> density p(t)
-            #p = normalize_center_nonneg_density(y, g)
-
-            # 2) scale to current with fixed charge
-
-            # 3) mag + phase (input), normalize mag[0]=1
+            # 2) convert to form factor (with DCPhysicalRFFT)
             formfactor = prof.to_form_factor(transform=DCPhysicalRFFT())
 
-            # 4) reconstruct
-            _, I_rec, info = reconstruct_current_from_mag(
-                formfactor.grid,
+            # 3) reconstruct current from magnitude only (with GSMagnitudeOnly)
+            prof_rec, ff_rec = self.reconstruction.run(
                 formfactor.mag,
-                charge_C=CHARGE_C,
-                n_iter=60,
-                init_phase="minphase",
-                enforce_dc_one=True,
-                enforce_nonneg=True,
-                normalize_area_to_one=True,
-                center=True,
+                formfactor.grid,
+                charge_C=prof.charge,
             )
+
 
             # store cache
             self._I_input = prof.current
-            self._I_recon = I_rec
+            self._I_recon = prof_rec.current
             self._mag_pos = formfactor.mag
-            self._phase_in = formfactor.phase
-            self._phase_pos = info["phase_pos"]
+            self._phase_in = ff_rec.phase
+            self._phase_recon = ff_rec.phase
 
         finally:
             self._recon_in_progress = False
@@ -263,7 +257,7 @@ class MainWindow(QMainWindow):
         self._I_input = None
         self._I_recon = None
         self._mag_pos = None
-        self._phase_pos = None
+        self._phase_recon = None
         self._phase_in = None
 
     # -----------------------------
@@ -399,9 +393,10 @@ class MainWindow(QMainWindow):
     def redraw(self):
         use_cache = (
             self._I_input is not None
+            and self._I_recon is not None
             and self._mag_pos is not None
             and self._phase_in is not None
-            and self._phase_pos is not None
+            and self._phase_recon is not None
         )
 
         if use_cache:
@@ -409,10 +404,9 @@ class MainWindow(QMainWindow):
             I_rec = self._I_recon
             mag = self._mag_pos
             phase_in = self._phase_in
-            phase_rec = self._phase_pos
+            phase_rec = self._phase_recon
         else:
             prof = self.model.compute_profile()
-            #p = normalize_center_nonneg_density(y, g)
             I_in = prof.current
             I_rec = None
             ff = prof.to_form_factor(transform=DCPhysicalRFFT())
@@ -461,7 +455,11 @@ class MainWindow(QMainWindow):
     # Actions
     # -----------------------------
     def reset_params(self):
-        self.model = ProfileModel(ProfileModelState())
+        self.model = ProfileModel(ProfileModelState(
+            dt=DT,
+            t_max=T_MAX,
+            charge=CHARGE_C,
+        ))
         self._clear_recon_cache()
 
         for which in ("background", "peak"):

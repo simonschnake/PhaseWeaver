@@ -4,7 +4,8 @@ import pytest
 
 # Adjust this import to your actual module path
 # e.g. from phase_weaver.core.grid import Grid, next_pow2
-from phase_weaver.core.grid import Grid, next_pow2
+from phase_weaver.core import Grid
+from phase_weaver.core.base import next_pow2
 
 
 def test_next_pow2_basic():
@@ -26,6 +27,10 @@ def test_from_dt_tmax_rejects_nonpositive():
         Grid.from_dt_tmax(dt=1.0, t_max=0.0)
     with pytest.raises(ValueError):
         Grid.from_dt_tmax(dt=-1.0, t_max=1.0)
+    with pytest.raises(ValueError):
+        Grid(N=-64, dt=1e-15)
+    with pytest.raises(ValueError):
+        Grid(N=64, dt=-1e-15)
 
 
 def test_from_df_fmax_rejects_nonpositive():
@@ -120,4 +125,9 @@ def test_f_pos_monotonic_and_nyquist(grid):
     assert np.isclose(f[0], 0.0)
     assert np.isclose(f[-1], grid.f_nyq)
 
-
+def test_uneven_n_for_grid():
+    # Ensure that if we try to create a grid with odd N, it gets adjusted to even
+    g = Grid.from_dt_tmax(dt=1, t_max=33.5, snap_pow2=False)
+    assert g.N % 2 == 0
+    g = Grid.from_df_fmax(df=1, f_max=33.5, snap_pow2=False)
+    assert g.N % 2 == 0

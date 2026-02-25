@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from phase_weaver.core.current_profile import CurrentProfile
-from phase_weaver.core.grid import Grid
+from phase_weaver.core import CurrentProfile, Grid
 from phase_weaver.profiles import AsymSuperGaussParams, asymmetric_super_gaussian
 
 def _default_background() -> AsymSuperGaussParams:
