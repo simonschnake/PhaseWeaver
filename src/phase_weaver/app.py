@@ -1,9 +1,13 @@
 import sys
-import numpy as np
 
-from PySide6.QtCore import Qt, QTimer, QSignalBlocker
+import numpy as np
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.figure import Figure
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -17,17 +21,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
-from matplotlib.figure import Figure
-
 from phase_weaver.core import DCPhysicalRFFT
-
-from phase_weaver.core.reconstruction import GSMagnitudeOnly
-from phase_weaver.qt_theme import set_dark_theme
-from phase_weaver.mpl_style import apply_mpl_style, sync_mpl_to_qt
-from phase_weaver.model.profile_model import ProfileModel, ProfileModelState
 from phase_weaver.core.constraints import CenterFirstMoment
+from phase_weaver.core.reconstruction import GSMagnitudeOnly, PredefinedPhase, ZeroPhase, RandomPhase, MinimumPhaseCepstrum
+from phase_weaver.model.profile_model import ProfileModel, ProfileModelState
+from phase_weaver.mpl_style import apply_mpl_style, sync_mpl_to_qt
+from phase_weaver.qt_theme import set_dark_theme
 
 # -----------------------------
 # Constants / UI units
@@ -95,7 +94,8 @@ class MainWindow(QMainWindow):
                 dt=DT,
                 t_max=T_MAX,
                 charge=CHARGE_C,
-            ))
+            )
+        )
 
         self.center_prof = CenterFirstMoment()
 
@@ -105,6 +105,7 @@ class MainWindow(QMainWindow):
         # --- internal control registry for reset ---
         # maps (which, field) -> (slider, spin)
         self._controls: dict[tuple[str, str], tuple[QSlider, QDoubleSpinBox]] = {}
+        self._selector_groups: dict[str, QButtonGroup] = {}
 
         # --- reconstruction cache (cleared on any parameter change) ---
         self._I_input = None  # charge-scaled input current (A)
@@ -112,6 +113,7 @@ class MainWindow(QMainWindow):
         self._mag_pos = None  # normalized mag (mag[0]=1)
         self._phase_recon = None  # reconstructed phase used for plotting (rad)
         self._phase_in = None  # input phase (unwrapped) used for plotting (rad)
+        self._phase_recon_last = None  # for use last phase in PredefinedPhase init
 
         # --- Plot ---
         self.canvas = MplCanvas()
@@ -121,15 +123,21 @@ class MainWindow(QMainWindow):
         self.toolbar = NavigationToolbar(self.canvas, self)
 
         # Left: time-domain current
-        (self.line_current,) = self.canvas.ax_time.plot([], [], label="input", linewidth=2.0)
-        (self.line_recon,) = self.canvas.ax_time.plot([], [], label="reconstructed", linestyle="--", alpha=0.9)
+        (self.line_current,) = self.canvas.ax_time.plot(
+            [], [], label="input", linewidth=2.0
+        )
+        (self.line_recon,) = self.canvas.ax_time.plot(
+            [], [], label="reconstructed", linestyle="--", alpha=0.9
+        )
         self.canvas.ax_time.legend(loc="upper right", fontsize="small")
         self.canvas.ax_time.set_xlabel(f"t ({TIME_UNIT})")
         self.canvas.ax_time.set_ylabel("Current (kA)")
 
         # Right: magnitude + phases
         (self.line_mag,) = self.canvas.ax_mag.plot([], [], label="|F|", color="C0")
-        (self.line_phase_in,) = self.canvas.ax_phase.plot([], [], label="phase (input)", color="C1")
+        (self.line_phase_in,) = self.canvas.ax_phase.plot(
+            [], [], label="phase (input)", color="C1"
+        )
         (self.line_phase_recon,) = self.canvas.ax_phase.plot(
             [], [], label="phase (recon)", color="C2", linestyle="--", alpha=0.9
         )
@@ -143,7 +151,9 @@ class MainWindow(QMainWindow):
         self.canvas.ax_phase.legend(loc="upper right", fontsize="small")
 
         # Top x-axis: wavelength (nm)
-        self.ax_lambda = self.canvas.ax_mag.secondary_xaxis("top", functions=(thz_to_nm, nm_to_thz))
+        self.ax_lambda = self.canvas.ax_mag.secondary_xaxis(
+            "top", functions=(thz_to_nm, nm_to_thz)
+        )
         self.ax_lambda.set_xlabel("λ (nm)")
         self.ax_lambda.set_xticks([1000, 1500, 2000, 3000, 5000, 10000])
 
@@ -154,7 +164,17 @@ class MainWindow(QMainWindow):
         gb_bg = self._make_gaussian_group(
             "Background", which="background", spec=BACKGROUND_SPEC, include_center=False
         )
-        gb_pk = self._make_gaussian_group("Spike", which="peak", spec=SPIKE_SPEC, include_center=True)
+        gb_pk = self._make_gaussian_group(
+            "Spike", which="peak", spec=SPIKE_SPEC, include_center=True
+        )
+
+        phase_init_box = self._make_button_selector(
+            "phase_init",
+            title="Phase Init",
+            labels=["zero", "random", "minphase", "last"],
+            default_index=2,
+        )
+
 
         btn_row = QWidget()
         btn_layout = QHBoxLayout(btn_row)
@@ -171,7 +191,8 @@ class MainWindow(QMainWindow):
 
         controls_layout.addWidget(gb_bg)
         controls_layout.addWidget(gb_pk)
-        controls_layout.addWidget(btn_row)
+        # controls_layout.addWidget(btn_row)
+        controls_layout.addWidget(phase_init_box)
         controls_layout.addStretch(1)
 
         # --- Debounce updates ---
@@ -236,13 +257,13 @@ class MainWindow(QMainWindow):
                 charge_C=prof.charge,
             )
 
-
             # store cache
             self._I_input = prof.current
             self._I_recon = prof_rec.current
             self._mag_pos = formfactor.mag
-            self._phase_in = ff_rec.phase
+            self._phase_in = formfactor.phase
             self._phase_recon = ff_rec.phase
+            self._phase_recon_last = ff_rec.phase  # for potential use in PredefinedPhase init
 
         finally:
             self._recon_in_progress = False
@@ -322,10 +343,59 @@ class MainWindow(QMainWindow):
 
         return slider, spin
 
-    def _register_control(self, which: str, field: str, slider: QSlider, spin: QDoubleSpinBox):
+    def _register_control(
+        self, which: str, field: str, slider: QSlider, spin: QDoubleSpinBox
+    ):
         self._controls[(which, field)] = (slider, spin)
 
-    def _make_gaussian_group(self, title: str, which: str, spec: dict, include_center: bool) -> QGroupBox:
+    def _make_button_selector(
+        self,
+        key: str,
+        title: str,
+        labels: list[str],
+        default_index: int = 0,
+    ) -> QGroupBox:
+        gb = QGroupBox(title)
+        layout = QHBoxLayout(gb)
+
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+
+        for i, label in enumerate(labels):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setChecked(i == default_index)
+            layout.addWidget(btn)
+            group.addButton(btn, i)
+
+        group.idClicked.connect(self._on_reconstruction_settings_changed)
+        self._selector_groups[key] = group
+        return gb
+
+    def _get_selector_state(self) -> dict[str, int]:
+        state = {}
+        for key, group in self._selector_groups.items():
+            state[key] = group.checkedId()
+        return state
+
+    def _on_reconstruction_settings_changed(self, _id: int):
+        state = self._get_selector_state()
+
+        phase_init = [
+            ZeroPhase(),
+            RandomPhase(),
+            MinimumPhaseCepstrum(), 
+            PredefinedPhase(phase=self._phase_recon_last if self._phase_recon_last is not None else np.zeros_like(self._mag_pos)),
+        ][state["phase_init"]]
+
+        self.reconstruction = GSMagnitudeOnly(phase_init=phase_init)
+
+        self._clear_recon_cache()
+        self.schedule_reconstruct()
+
+    def _make_gaussian_group(
+        self, title: str, which: str, spec: dict, include_center: bool
+    ) -> QGroupBox:
         gb = QGroupBox(title)
         form = QFormLayout(gb)
 
@@ -381,7 +451,7 @@ class MainWindow(QMainWindow):
             self.schedule_redraw()
             self.schedule_reconstruct()
 
-        for (sl, sp) in controls.values():
+        for sl, sp in controls.values():
             sl.valueChanged.connect(on_change)
             sp.valueChanged.connect(on_change)
 
@@ -440,14 +510,41 @@ class MainWindow(QMainWindow):
         else:
             self.line_phase_recon.set_visible(False)
 
-        # limit x-axis to 0..333 THz
+        # limit x-axis to plotted range
         self.canvas.ax_mag.set_xlim(0.0, 333.0)
 
-        self.canvas.ax_mag.relim()
-        self.canvas.ax_mag.autoscale_view(scalex=False, scaley=True)
+        # autoscale Y from only the visible X range
+        x0, x1 = self.canvas.ax_mag.get_xlim()
+        mask = (f_thz >= x0) & (f_thz <= x1)
 
-        self.canvas.ax_phase.relim()
-        self.canvas.ax_phase.autoscale_view(scalex=False, scaley=True)
+        if np.any(mask):
+            # magnitude (log axis)
+            mag_vis = mag_plot[mask]
+            mag_vis = mag_vis[np.isfinite(mag_vis) & (mag_vis > 0)]
+            if mag_vis.size:
+                y0 = mag_vis.min()
+                y1 = mag_vis.max()
+                if y0 == y1:
+                    y0 *= 0.8
+                    y1 *= 1.2
+                else:
+                    y0 /= 1.2
+                    y1 *= 1.2
+                self.canvas.ax_mag.set_ylim(y0, y1)
+
+            # phase
+            phase_parts = [phase_in[mask]]
+            if phase_rec is not None:
+                phase_parts.append(phase_rec[mask])
+
+            phase_vis = np.concatenate(
+                [p[np.isfinite(p)] for p in phase_parts if np.any(np.isfinite(p))]
+            )
+            if phase_vis.size:
+                y0 = phase_vis.min()
+                y1 = phase_vis.max()
+                pad = 0.05 * (y1 - y0) if y1 > y0 else 0.5
+                self.canvas.ax_phase.set_ylim(y0 - pad, y1 + pad)
 
         self.canvas.draw_idle()
 
@@ -455,11 +552,13 @@ class MainWindow(QMainWindow):
     # Actions
     # -----------------------------
     def reset_params(self):
-        self.model = ProfileModel(ProfileModelState(
-            dt=DT,
-            t_max=T_MAX,
-            charge=CHARGE_C,
-        ))
+        self.model = ProfileModel(
+            ProfileModelState(
+                dt=DT,
+                t_max=T_MAX,
+                charge=CHARGE_C,
+            )
+        )
         self._clear_recon_cache()
 
         for which in ("background", "peak"):
@@ -493,7 +592,9 @@ class MainWindow(QMainWindow):
         self.schedule_reconstruct()
 
     def export_png(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Export PNG", "profile.png", "PNG Images (*.png)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export PNG", "profile.png", "PNG Images (*.png)"
+        )
         if path:
             self.canvas.figure.savefig(path, dpi=150)
 

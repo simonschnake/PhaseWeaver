@@ -101,6 +101,23 @@ class MinimumPhaseCepstrum(PhaseInitializer):
         phase = np.angle(spec[: N // 2 + 1])
         return np.unwrap(phase)
 
+class PredefinedPhase(PhaseInitializer):
+    """
+    Use a predefined phase array, ignoring the input magnitude.
+    """
+    
+    def __init__(self, phase: np.ndarray):
+        self.phase = np.asarray(phase, dtype=float)
+        self.name = "predefined"
+
+    def init_phase(
+        self, mag_pos: np.ndarray, grid: Grid, *, eps_mag: float
+    ) -> np.ndarray:
+        expected = (grid.N // 2 + 1,)
+        if self.phase.shape != expected:
+            raise ValueError(f"predefined phase must have shape {expected}, got {self.phase.shape}")
+        return np.unwrap(self.phase)
+
 
 # =============================================================================
 # Stopping criteria
@@ -249,7 +266,7 @@ class GSMagnitudeOnly(ReconstructionAlgorithm):
         ClampMagnitude(eps=1e-6), EnforceDCOne()
     )
     stop: StopCriterion = StopCriteria(
-        MaxIter(50), PhaseStoppedChanging(tol=1e-8, patience=5), logic="any"
+        MaxIter(15_000), PhaseStoppedChanging(tol=1e-8, patience=5), logic="any"
     )
     eps_mag: float = 1e-30
 
