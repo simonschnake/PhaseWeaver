@@ -8,6 +8,7 @@ from numpy.testing import assert_allclose
 from phase_weaver.core.base import Grid, Profile, FormFactor, DCPhysicalRFFT
 from phase_weaver.core.reconstruction import (
     PhaseInitializer,
+    PredefinedPhase,
     StopCriterion,
     ZeroPhase,
     RandomPhase,
@@ -250,3 +251,15 @@ def test_stopcriteria_all_logic(grid: Grid, gaussian_density: np.ndarray, measur
     s_all = StopCriteria(AlwaysTrue(1), AlwaysTrue(1), logic="all")
     s_all.reset()
     assert s_all.update(prof, ff) is True  # both must be True to stop
+
+
+def test_predefined_phase(grid: Grid, measured_mag: np.ndarray):
+    phase_init = PredefinedPhase(phase=np.zeros_like(measured_mag))
+    
+    phase = phase_init.init_phase(measured_mag, grid, eps_mag=1e-30)
+    assert phase.shape == measured_mag.shape
+    assert_allclose(phase, 0.0)
+
+    phase_init = PredefinedPhase(phase=np.zeros(1)) # wrong shape
+    with pytest.raises(ValueError):
+        phase_init.init_phase(measured_mag, grid, eps_mag=1e-30)
