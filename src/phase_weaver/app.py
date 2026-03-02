@@ -102,12 +102,16 @@ def nm_to_thz(l_nm):
     return C_NM_THz / wavelength
 
 
-def load_app_icon():
-    data = files("phase_weaver").joinpath("icon.png").read_bytes()
-    pixmap = QPixmap()
-    pixmap.loadFromData(data)
-    return QIcon(pixmap)
+def load_app_icon() -> QIcon:
+    icon_file = files("phase_weaver").joinpath("icon.png")
+    if not icon_file.is_file():
+        return QIcon()
 
+    data = icon_file.read_bytes()
+    pixmap = QPixmap()
+    if not pixmap.loadFromData(data):
+        return QIcon()
+    return QIcon(pixmap)
 
 class MplCanvas(FigureCanvas):
     def __init__(self):
