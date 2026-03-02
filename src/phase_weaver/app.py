@@ -103,15 +103,10 @@ def nm_to_thz(l_nm):
 
 
 def load_app_icon() -> QIcon:
-    icon_file = files("phase_weaver").joinpath("icon.png")
-    if not icon_file.is_file():
+    try:
+        return QIcon(":/icon.png")
+    except Exception:
         return QIcon()
-
-    data = icon_file.read_bytes()
-    pixmap = QPixmap()
-    if not pixmap.loadFromData(data):
-        return QIcon()
-    return QIcon(pixmap)
 
 class MplCanvas(FigureCanvas):
     def __init__(self):
