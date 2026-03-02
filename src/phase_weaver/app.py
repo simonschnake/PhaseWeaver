@@ -3,6 +3,7 @@ from importlib.resources import files
 import sys
 
 import numpy as np
+import phase_weaver.rc_resources
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
