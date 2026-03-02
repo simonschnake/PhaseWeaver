@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+from importlib.resources import files
 import sys
 
 import numpy as np
@@ -5,6 +7,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -22,8 +25,24 @@ from PySide6.QtWidgets import (
 )
 
 from phase_weaver.core import DCPhysicalRFFT
-from phase_weaver.core.constraints import CenterFirstMoment
-from phase_weaver.core.reconstruction import GSMagnitudeOnly, PredefinedPhase, ZeroPhase, RandomPhase, MinimumPhaseCepstrum
+from phase_weaver.core.constraints import (
+    CenterFirstMoment,
+    ClampMagnitude,
+    EnforceDCOne,
+    NonNegativity,
+    NormalizeArea,
+    ReplacePhaseEndLinear,  # adjust if your class has a different name
+)
+from phase_weaver.core.reconstruction import (
+    GSMagnitudeOnly,
+    MaxIter,
+    MinIter,
+    MinimumPhaseCepstrum,
+    PhaseStoppedChanging,
+    PredefinedPhase,
+    RandomPhase,
+    ZeroPhase,
+)
 from phase_weaver.model.profile_model import ProfileModel, ProfileModelState
 from phase_weaver.mpl_style import apply_mpl_style, sync_mpl_to_qt
 from phase_weaver.qt_theme import set_dark_theme
@@ -36,10 +55,12 @@ DT = 1e-16
 T_MAX = 1e-13
 
 TIME_UNIT = "fs"
-S_TO_T = 1e15  # seconds -> fs
-T_TO_S = 1e-15  # fs -> seconds
+S_TO_T = 1e15
+T_TO_S = 1e-15
 
-# Slider specs: (min, max, step, default) in DISPLAY units (fs for time fields)
+PHASE_INIT_LABELS = ["zero", "random", "minphase", "last"]
+PHASE_INIT_DEFAULT_INDEX = 2  # minphase
+
 SPIKE_SPEC = {
     "center_fs": (-20.0, 20.0, 1.0, -10.0),
     "width_fs": (0.1, 10.0, 0.005, 0.721),
@@ -49,17 +70,24 @@ SPIKE_SPEC = {
 }
 
 BACKGROUND_SPEC = {
-    # background has no center control (forced to 0)
     "width_fs": (1.0, 100.0, 0.5, 21.91914604893585),
     "skew": (-1.0, 1.0, 0.1, 0.0),
     "order": (1e-8, 10.0, 0.10, 1.0),
     "amplitude": (0.0, 1e5, 100.0, 5819.0),
 }
 
-# Wavelength axis mapping: f(THz) <-> λ(nm), λ = c / f
-C_NM_THz = 299792.458  # speed of light in (nm·THz)
+C_NM_THz = 299792.458
 F_EPS_THz = 1e-6
 L_EPS_NM = 1e-6
+PHASE_END_REF_FREQ_HZ = 300e12
+
+
+@dataclass
+class ReconUiState:
+    phase_init_mode: str = "minphase"
+    linear_phase_end: bool = False
+    linear_phase_end_start_freq_hz: float = 0.0
+    linear_phase_end_phase_at_300_thz: float = 0.0
 
 
 def thz_to_nm(f_thz):
@@ -72,6 +100,13 @@ def nm_to_thz(l_nm):
     wavelength = np.asarray(l_nm, dtype=float)
     wavelength = np.maximum(wavelength, L_EPS_NM)
     return C_NM_THz / wavelength
+
+
+def load_app_icon():
+    data = files("phase_weaver").joinpath("icon.png").read_bytes()
+    pixmap = QPixmap()
+    pixmap.loadFromData(data)
+    return QIcon(pixmap)
 
 
 class MplCanvas(FigureCanvas):
@@ -87,6 +122,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Phase Weaver")
+        self.setWindowIcon(load_app_icon())
 
         # --- Model ---
         self.model = ProfileModel(
@@ -96,33 +132,42 @@ class MainWindow(QMainWindow):
                 charge=CHARGE_C,
             )
         )
-
         self.center_prof = CenterFirstMoment()
 
-        # --- Reconstruction ---
-        self.reconstruction = GSMagnitudeOnly()
+        # --- Reconstruction core ---
+        self._recon_transform = DCPhysicalRFFT(unwrap_phase=True, dc_normalize=False)
+        self._recon_time_constraints = (
+            NonNegativity() + NormalizeArea() + CenterFirstMoment()
+        )
+        self._recon_stop_condition = (
+            MaxIter(1_000) + PhaseStoppedChanging(tol=1e-8, patience=5) + MinIter(10)
+        )
 
-        # --- internal control registry for reset ---
-        # maps (which, field) -> (slider, spin)
+        # --- UI state for reconstruction options ---
+        self._ui_state = ReconUiState(
+            phase_init_mode=PHASE_INIT_LABELS[PHASE_INIT_DEFAULT_INDEX],
+            linear_phase_end=False,
+            linear_phase_end_start_freq_hz=0.5 * self.model.grid.f_pos[-1],
+            linear_phase_end_phase_at_300_thz=0.0,
+        )
+
+        # --- registries ---
         self._controls: dict[tuple[str, str], tuple[QSlider, QDoubleSpinBox]] = {}
         self._selector_groups: dict[str, QButtonGroup] = {}
 
-        # --- reconstruction cache (cleared on any parameter change) ---
-        self._I_input = None  # charge-scaled input current (A)
-        self._I_recon = None  # charge-scaled reconstructed current (A)
-        self._mag_pos = None  # normalized mag (mag[0]=1)
-        self._phase_recon = None  # reconstructed phase used for plotting (rad)
-        self._phase_in = None  # input phase (unwrapped) used for plotting (rad)
-        self._phase_recon_last = None  # for use last phase in PredefinedPhase init
+        # --- reconstruction cache ---
+        self._I_input = None
+        self._I_recon = None
+        self._mag_pos = None
+        self._phase_recon = None
+        self._phase_in = None
+        self._phase_recon_last = None
 
         # --- Plot ---
         self.canvas = MplCanvas()
         self.canvas.setStyleSheet("background: #1e1e1e;")
-
-        # Matplotlib toolbar (Option 1: full zoom/pan/etc)
         self.toolbar = NavigationToolbar(self.canvas, self)
 
-        # Left: time-domain current
         (self.line_current,) = self.canvas.ax_time.plot(
             [], [], label="input", linewidth=2.0
         )
@@ -133,7 +178,6 @@ class MainWindow(QMainWindow):
         self.canvas.ax_time.set_xlabel(f"t ({TIME_UNIT})")
         self.canvas.ax_time.set_ylabel("Current (kA)")
 
-        # Right: magnitude + phases
         (self.line_mag,) = self.canvas.ax_mag.plot([], [], label="|F|", color="C0")
         (self.line_phase_in,) = self.canvas.ax_phase.plot(
             [], [], label="phase (input)", color="C1"
@@ -146,11 +190,9 @@ class MainWindow(QMainWindow):
         self.canvas.ax_mag.set_ylabel("|F(f)|", color="C0")
         self.canvas.ax_phase.set_ylabel("phase (rad)", color="C1")
         self.canvas.ax_mag.set_yscale("log")
-
         self.canvas.ax_mag.legend(loc="upper left", fontsize="small")
         self.canvas.ax_phase.legend(loc="upper right", fontsize="small")
 
-        # Top x-axis: wavelength (nm)
         self.ax_lambda = self.canvas.ax_mag.secondary_xaxis(
             "top", functions=(thz_to_nm, nm_to_thz)
         )
@@ -167,14 +209,14 @@ class MainWindow(QMainWindow):
         gb_pk = self._make_gaussian_group(
             "Spike", which="peak", spec=SPIKE_SPEC, include_center=True
         )
-
         phase_init_box = self._make_button_selector(
-            "phase_init",
+            key="phase_init",
             title="Phase Init",
-            labels=["zero", "random", "minphase", "last"],
-            default_index=2,
+            labels=PHASE_INIT_LABELS,
+            default_index=PHASE_INIT_DEFAULT_INDEX,
+            on_change=self._on_phase_init_changed,
         )
-
+        phase_end_box = self._make_phase_end_box()
 
         btn_row = QWidget()
         btn_layout = QHBoxLayout(btn_row)
@@ -191,16 +233,16 @@ class MainWindow(QMainWindow):
 
         controls_layout.addWidget(gb_bg)
         controls_layout.addWidget(gb_pk)
-        # controls_layout.addWidget(btn_row)
         controls_layout.addWidget(phase_init_box)
+        controls_layout.addWidget(phase_end_box)
+        controls_layout.addWidget(btn_row)
         controls_layout.addStretch(1)
 
-        # --- Debounce updates ---
+        # --- Timers ---
         self._update_timer = QTimer(self)
         self._update_timer.setSingleShot(True)
         self._update_timer.timeout.connect(self.redraw)
 
-        # --- Debounce reconstruction ---
         self._recon_timer = QTimer(self)
         self._recon_timer.setSingleShot(True)
         self._recon_timer.timeout.connect(self._reconstruct_now)
@@ -213,16 +255,25 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(central)
 
         left = QVBoxLayout()
-        left.addWidget(self.toolbar)  # <-- IMPORTANT: show the Matplotlib buttons
+        left.addWidget(self.toolbar)
         left.addWidget(self.canvas, 1)
 
         layout.addLayout(left, 1)
         layout.addWidget(controls)
 
+        self.setStyleSheet(
+            """
+            QPushButton:checked {
+                border: 2px solid #4aa4ff;
+                font-weight: bold;
+                background-color: #2a2a2a;
+            }
+            """
+        )
+
         self.setCentralWidget(central)
         self.resize(1800, 650)
 
-        # Initial draw + initial reconstruction
         self.redraw()
         self.schedule_reconstruct()
 
@@ -235,35 +286,38 @@ class MainWindow(QMainWindow):
     def schedule_reconstruct(self):
         self._recon_timer.start(250)
 
+    def _invalidate_reconstruction(self, redraw: bool = True):
+        self._clear_recon_cache()
+        if redraw:
+            self.schedule_redraw()
+        self.schedule_reconstruct()
+
     def _reconstruct_now(self):
-        # If reconstruction takes long and user changes params again, queue one more run.
         if self._recon_in_progress:
             self._recon_pending = True
             return
 
         self._recon_in_progress = True
         try:
-            # 1) compute current profile from model
             prof = self.model.compute_profile()
-            self.center_prof.apply(prof)
+            if self.center_prof is not None:
+                self.center_prof.apply(prof)
 
-            # 2) convert to form factor (with DCPhysicalRFFT)
             formfactor = prof.to_form_factor(transform=DCPhysicalRFFT())
+            reconstruction = self._build_reconstruction()
 
-            # 3) reconstruct current from magnitude only (with GSMagnitudeOnly)
-            prof_rec, ff_rec = self.reconstruction.run(
+            prof_rec, ff_rec = reconstruction.run(
                 formfactor.mag,
                 formfactor.grid,
                 charge_C=prof.charge,
             )
 
-            # store cache
             self._I_input = prof.current
             self._I_recon = prof_rec.current
             self._mag_pos = formfactor.mag
             self._phase_in = formfactor.phase
             self._phase_recon = ff_rec.phase
-            self._phase_recon_last = ff_rec.phase  # for potential use in PredefinedPhase init
+            self._phase_recon_last = ff_rec.phase
 
         finally:
             self._recon_in_progress = False
@@ -281,6 +335,47 @@ class MainWindow(QMainWindow):
         self._phase_recon = None
         self._phase_in = None
 
+    def _build_reconstruction(self) -> GSMagnitudeOnly:
+        return GSMagnitudeOnly(
+            transform=self._recon_transform,
+            phase_init=self._make_phase_init(),
+            time_constraints=self._recon_time_constraints,
+            frequency_constraints=self._make_frequency_constraints(),
+            stop=self._recon_stop_condition,
+        )
+
+    def _make_phase_init(self):
+        mode = self._ui_state.phase_init_mode
+
+        if mode == "zero":
+            return ZeroPhase()
+        if mode == "random":
+            return RandomPhase()
+        if mode == "minphase":
+            return MinimumPhaseCepstrum()
+        if mode == "last":
+            phase = (
+                self._phase_recon_last
+                if self._phase_recon_last is not None
+                else np.zeros_like(self.model.grid.f_pos)
+            )
+            return PredefinedPhase(phase=phase)
+
+        return MinimumPhaseCepstrum()
+
+    def _make_frequency_constraints(self):
+        constraints = ClampMagnitude(eps=1e-6) + EnforceDCOne()
+
+        if self._ui_state.linear_phase_end:
+            alpha = self._ui_state.linear_phase_end_phase_at_300_thz / PHASE_END_REF_FREQ_HZ
+            constraints = constraints + ReplacePhaseEndLinear(
+                grid=self.model.grid,
+                start_freq=self._ui_state.linear_phase_end_start_freq_hz,
+                alpha=alpha,
+            )
+
+        return constraints
+
     # -----------------------------
     # UI helpers
     # -----------------------------
@@ -293,14 +388,11 @@ class MainWindow(QMainWindow):
         return w
 
     def _make_slider_spin(self, min_v: float, max_v: float, step: float, init: float):
-        # slider uses integer ticks: value = min_v + tick * step
         n_ticks = int(round((max_v - min_v) / step))
         n_ticks = max(n_ticks, 1)
 
         slider = QSlider(Qt.Horizontal)
         slider.setRange(0, n_ticks)
-
-        # store mapping metadata for reset()
         slider.setProperty("_min_v", float(min_v))
         slider.setProperty("_step", float(step))
 
@@ -308,7 +400,6 @@ class MainWindow(QMainWindow):
         spin.setRange(min_v, max_v)
         spin.setSingleStep(step)
 
-        # decimals based on step (cap to avoid silly long floats)
         if step < 1:
             dec = int(np.ceil(-np.log10(step)))
             spin.setDecimals(min(max(dec, 2), 10))
@@ -322,9 +413,8 @@ class MainWindow(QMainWindow):
             return int(round((val - min_v) / step))
 
         def slider_to_spin(tick: int):
-            val = tick_to_value(tick)
             with QSignalBlocker(spin):
-                spin.setValue(val)
+                spin.setValue(tick_to_value(tick))
 
         def spin_to_slider(val: float):
             tick = value_to_tick(val)
@@ -335,7 +425,6 @@ class MainWindow(QMainWindow):
         slider.valueChanged.connect(slider_to_spin)
         spin.valueChanged.connect(spin_to_slider)
 
-        # set initial values WITHOUT feedback fights
         init = float(np.clip(init, min_v, max_v))
         with QSignalBlocker(slider), QSignalBlocker(spin):
             spin.setValue(init)
@@ -348,12 +437,28 @@ class MainWindow(QMainWindow):
     ):
         self._controls[(which, field)] = (slider, spin)
 
+    def _set_slider_spin_value(
+        self,
+        slider: QSlider,
+        spin: QDoubleSpinBox,
+        value: float,
+    ):
+        min_v = float(slider.property("_min_v"))
+        step = float(slider.property("_step"))
+        tick = int(round((value - min_v) / step))
+        tick = max(slider.minimum(), min(slider.maximum(), tick))
+
+        with QSignalBlocker(slider), QSignalBlocker(spin):
+            spin.setValue(value)
+            slider.setValue(tick)
+
     def _make_button_selector(
         self,
         key: str,
         title: str,
         labels: list[str],
-        default_index: int = 0,
+        default_index: int,
+        on_change,
     ) -> QGroupBox:
         gb = QGroupBox(title)
         layout = QHBoxLayout(gb)
@@ -368,30 +473,71 @@ class MainWindow(QMainWindow):
             layout.addWidget(btn)
             group.addButton(btn, i)
 
-        group.idClicked.connect(self._on_reconstruction_settings_changed)
+        group.idClicked.connect(on_change)
         self._selector_groups[key] = group
         return gb
 
+    def _make_phase_end_box(self) -> QGroupBox:
+        gb = QGroupBox("Linear Phase End")
+        outer = QVBoxLayout(gb)
+
+        self._phase_end_btn = QPushButton("Not applied")
+        self._phase_end_btn.setCheckable(True)
+        self._phase_end_btn.setChecked(False)
+        self._phase_end_btn.toggled.connect(self._on_phase_end_toggled)
+        outer.addWidget(self._phase_end_btn)
+
+        form_widget = QWidget()
+        form = QFormLayout(form_widget)
+        form.setContentsMargins(0, 0, 0, 0)
+
+        f_max_thz = 300.0 
+        start_init_thz = 200 
+
+        self._phase_end_start_slider, self._phase_end_start_spin = self._make_slider_spin(
+            0.0, f_max_thz, 0.1, start_init_thz
+        )
+        form.addRow(
+            QLabel("start freq (THz)"),
+            self._row(self._phase_end_start_slider, self._phase_end_start_spin),
+        )
+
+        self._phase_end_phase_slider, self._phase_end_phase_spin = self._make_slider_spin(
+            -300.0, 300.0, 1.0, self._ui_state.linear_phase_end_phase_at_300_thz
+        )
+        form.addRow(
+            QLabel("phase @ 300 THz"),
+            self._row(self._phase_end_phase_slider, self._phase_end_phase_spin),
+        )
+
+        outer.addWidget(form_widget)
+        self._phase_end_controls_widget = form_widget
+        self._phase_end_controls_widget.setEnabled(True)
+
+        self._phase_end_start_slider.valueChanged.connect(self._on_phase_end_params_changed)
+        self._phase_end_start_spin.valueChanged.connect(self._on_phase_end_params_changed)
+        self._phase_end_phase_slider.valueChanged.connect(self._on_phase_end_params_changed)
+        self._phase_end_phase_spin.valueChanged.connect(self._on_phase_end_params_changed)
+
+        return gb
+
     def _get_selector_state(self) -> dict[str, int]:
-        state = {}
-        for key, group in self._selector_groups.items():
-            state[key] = group.checkedId()
-        return state
+        return {key: group.checkedId() for key, group in self._selector_groups.items()}
 
-    def _on_reconstruction_settings_changed(self, _id: int):
-        state = self._get_selector_state()
+    def _on_phase_init_changed(self, _id: int):
+        idx = self._get_selector_state()["phase_init"]
+        self._ui_state.phase_init_mode = PHASE_INIT_LABELS[idx]
+        self._invalidate_reconstruction(redraw=False)
 
-        phase_init = [
-            ZeroPhase(),
-            RandomPhase(),
-            MinimumPhaseCepstrum(), 
-            PredefinedPhase(phase=self._phase_recon_last if self._phase_recon_last is not None else np.zeros_like(self._mag_pos)),
-        ][state["phase_init"]]
+    def _on_phase_end_toggled(self, checked: bool):
+        self._phase_end_btn.setText("Applied" if checked else "Not applied")
+        self._ui_state.linear_phase_end = checked
+        self._invalidate_reconstruction(redraw=False)
 
-        self.reconstruction = GSMagnitudeOnly(phase_init=phase_init)
-
-        self._clear_recon_cache()
-        self.schedule_reconstruct()
+    def _on_phase_end_params_changed(self, _=None):
+        self._ui_state.linear_phase_end_start_freq_hz = self._phase_end_start_spin.value() * 1e12
+        self._ui_state.linear_phase_end_phase_at_300_thz = self._phase_end_phase_spin.value()
+        self._invalidate_reconstruction(redraw=False)
 
     def _make_gaussian_group(
         self, title: str, which: str, spec: dict, include_center: bool
@@ -435,21 +581,17 @@ class MainWindow(QMainWindow):
         def on_change(_=None):
             target = getattr(self.model.state, which)
 
-            # enforce "background center = 0" always
             if which == "background":
                 target.center = 0.0
-            else:
-                if include_center:
-                    target.center = controls["center_fs"][1].value() * T_TO_S  # fs -> s
+            elif include_center:
+                target.center = controls["center_fs"][1].value() * T_TO_S
 
-            target.width = controls["width_fs"][1].value() * T_TO_S  # fs -> s
+            target.width = controls["width_fs"][1].value() * T_TO_S
             target.skew = controls["skew"][1].value()
             target.order = controls["order"][1].value()
             target.amplitude = controls["amplitude"][1].value()
 
-            self._clear_recon_cache()
-            self.schedule_redraw()
-            self.schedule_reconstruct()
+            self._invalidate_reconstruction(redraw=True)
 
         for sl, sp in controls.values():
             sl.valueChanged.connect(on_change)
@@ -483,8 +625,7 @@ class MainWindow(QMainWindow):
             mag, phase_in = ff.mag, ff.phase
             phase_rec = None
 
-        # --- left plot (kA) ---
-        t_ui = self.model.grid.t * S_TO_T  # seconds -> fs for UI display
+        t_ui = self.model.grid.t * S_TO_T
         self.line_current.set_data(t_ui, I_in * 1e-3)
 
         if I_rec is not None:
@@ -497,7 +638,6 @@ class MainWindow(QMainWindow):
         self.canvas.ax_time.relim()
         self.canvas.ax_time.autoscale_view(scalex=False, scaley=True)
 
-        # --- right plot ---
         f_thz = self.model.grid.f_pos * 1e-12
         mag_plot = np.maximum(mag, 1e-30)
 
@@ -510,15 +650,12 @@ class MainWindow(QMainWindow):
         else:
             self.line_phase_recon.set_visible(False)
 
-        # limit x-axis to plotted range
         self.canvas.ax_mag.set_xlim(0.0, 333.0)
 
-        # autoscale Y from only the visible X range
         x0, x1 = self.canvas.ax_mag.get_xlim()
         mask = (f_thz >= x0) & (f_thz <= x1)
 
         if np.any(mask):
-            # magnitude (log axis)
             mag_vis = mag_plot[mask]
             mag_vis = mag_vis[np.isfinite(mag_vis) & (mag_vis > 0)]
             if mag_vis.size:
@@ -532,7 +669,6 @@ class MainWindow(QMainWindow):
                     y1 *= 1.2
                 self.canvas.ax_mag.set_ylim(y0, y1)
 
-            # phase
             phase_parts = [phase_in[mask]]
             if phase_rec is not None:
                 phase_parts.append(phase_rec[mask])
@@ -559,37 +695,54 @@ class MainWindow(QMainWindow):
                 charge=CHARGE_C,
             )
         )
-        self._clear_recon_cache()
 
         for which in ("background", "peak"):
             p = getattr(self.model.state, which)
 
             defaults = {
-                "width_fs": p.width * S_TO_T,  # s -> fs
+                "width_fs": p.width * S_TO_T,
                 "skew": p.skew,
                 "order": p.order,
                 "amplitude": p.amplitude,
             }
             if which != "background":
-                defaults["center_fs"] = p.center * S_TO_T  # s -> fs
+                defaults["center_fs"] = p.center * S_TO_T
 
             for field, val in defaults.items():
                 pair = self._controls.get((which, field))
                 if pair is None:
                     continue
-
                 slider, spin = pair
-                min_v = float(slider.property("_min_v"))
-                step = float(slider.property("_step"))
-                tick = int(round((val - min_v) / step))
-                tick = max(slider.minimum(), min(slider.maximum(), tick))
+                self._set_slider_spin_value(slider, spin, val)
 
-                with QSignalBlocker(slider), QSignalBlocker(spin):
-                    spin.setValue(val)
-                    slider.setValue(tick)
+        # reset reconstruction UI state
+        self._ui_state.phase_init_mode = PHASE_INIT_LABELS[PHASE_INIT_DEFAULT_INDEX]
+        self._ui_state.linear_phase_end = False
+        self._ui_state.linear_phase_end_start_freq_hz = 0.5 * self.model.grid.f_pos[-1]
+        self._ui_state.linear_phase_end_phase_at_300_thz = 0.0
 
-        self.redraw()
-        self.schedule_reconstruct()
+        phase_group = self._selector_groups.get("phase_init")
+        if phase_group is not None and phase_group.button(PHASE_INIT_DEFAULT_INDEX):
+            with QSignalBlocker(phase_group):
+                phase_group.button(PHASE_INIT_DEFAULT_INDEX).setChecked(True)
+
+        with QSignalBlocker(self._phase_end_btn):
+            self._phase_end_btn.setChecked(False)
+            self._phase_end_btn.setText("Not applied")
+
+        self._set_slider_spin_value(
+            self._phase_end_start_slider,
+            self._phase_end_start_spin,
+            self._ui_state.linear_phase_end_start_freq_hz * 1e-12,
+        )
+        self._set_slider_spin_value(
+            self._phase_end_phase_slider,
+            self._phase_end_phase_spin,
+            self._ui_state.linear_phase_end_phase_at_300_thz,
+        )
+
+        self._phase_recon_last = None
+        self._invalidate_reconstruction(redraw=True)
 
     def export_png(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -601,12 +754,14 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
+    app.setWindowIcon(load_app_icon())
 
     set_dark_theme(app)
-    apply_mpl_style()  # must be before Figure creation
-    sync_mpl_to_qt(app)  # override dpi + font sizes
+    apply_mpl_style()
+    sync_mpl_to_qt(app)
 
     w = MainWindow()
+    w.setWindowIcon(load_app_icon())
     w.show()
     return app.exec()
 

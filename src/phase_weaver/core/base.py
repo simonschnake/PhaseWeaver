@@ -101,13 +101,12 @@ class Profile:
         if self.time_constraint is not None:
             self.time_constraint.apply(self)
 
-    @classmethod
-    def from_profile(cls, profile: "Profile") -> "Profile":
-        return cls(
-            grid=profile.grid,
-            values=profile.values.copy(),
-            charge=profile.charge,
-            time_constraint=profile.time_constraint,
+    def copy(self) -> "Profile":
+        return Profile(
+            grid=self.grid,
+            values=self.values.copy(),
+            charge=self.charge,
+            time_constraint=self.time_constraint,
         )
 
     @classmethod
@@ -147,12 +146,11 @@ class CurrentProfile(Profile):
             time_constraint=TimeConstraints(NonNegativity(), NormalizeArea()),
         )
 
-    @classmethod
-    def from_profile(cls, profile: "Profile") -> "Profile":
-        return cls(
-            grid=profile.grid,
-            values=profile.values.copy(),
-            charge=profile.charge,
+    def copy(self) -> "CurrentProfile":
+        return CurrentProfile(
+            grid=self.grid,
+            values=self.values.copy(),
+            charge=self.charge,
         )
 
     @property
@@ -172,22 +170,11 @@ class FormFactor:
         frequency_constraint: FrequencyConstraint | None = None,
     ):
         self.grid = grid
-        self.eps = eps if eps is not None else np.finfo(float).eps
-        self.mag = np.maximum(mag, self.eps)
         self.phase = phase
+        self.mag = mag
         self.frequency_constraint = frequency_constraint
         if self.frequency_constraint is not None:
             self.frequency_constraint.apply(self)
-
-    @classmethod
-    def from_form_factor(cls, form_factor: "FormFactor") -> "FormFactor":
-        return cls(
-            grid=form_factor.grid,
-            mag=form_factor.mag.copy(),
-            phase=form_factor.phase.copy(),
-            eps=form_factor.eps,
-            frequency_constraint=form_factor.frequency_constraint,
-        )
 
     @classmethod
     def from_profile(
@@ -195,8 +182,8 @@ class FormFactor:
     ) -> FormFactor:
         if transform is None:
             transform = DCPhysicalRFFT()
-        grid, mag, phase, eps = transform.profile_to_form_factor(profile)
-        return cls(grid=grid, mag=mag, phase=phase, eps=eps)
+        grid, mag, phase = transform.profile_to_form_factor(profile)
+        return cls(grid=grid, mag=mag, phase=phase)
 
     def to_profile(
         self, transform: Transform | None = None, charge: float | None = None
@@ -206,6 +193,14 @@ class FormFactor:
     @property
     def value(self) -> np.ndarray:
         return self.mag * np.exp(1j * self.phase)
+
+    def copy(self) -> "FormFactor":
+        return FormFactor(
+            grid=self.grid,
+            mag=self.mag.copy(),
+            phase=self.phase.copy(),
+            frequency_constraint=self.frequency_constraint,
+        )
 
 
 class Transform(ABC):
@@ -219,7 +214,7 @@ class Transform(ABC):
     @abstractmethod
     def profile_to_form_factor(
         self, profile: CurrentProfile
-    ) -> Tuple[Grid, np.ndarray, np.ndarray, float]:
+    ) -> Tuple[Grid, np.ndarray, np.ndarray]:
         raise NotImplementedError
 
     @abstractmethod
@@ -237,7 +232,7 @@ class DCPhysicalRFFT(Transform):
 
     def profile_to_form_factor(
         self, profile: CurrentProfile
-    ) -> Tuple[Grid, np.ndarray, np.ndarray, float]:
+    ) -> Tuple[Grid, np.ndarray, np.ndarray]:
         x_shift = np.fft.ifftshift(profile.values)
         F_pos = np.fft.rfft(x_shift) * profile.grid.dt
         mag = np.abs(F_pos)
@@ -250,7 +245,7 @@ class DCPhysicalRFFT(Transform):
         if self.unwrap_phase:
             phase = np.unwrap(phase)
 
-        return profile.grid, mag, phase, self.eps_mag
+        return profile.grid, mag, phase
 
     def form_factor_to_profile(
         self, form_factor: FormFactor

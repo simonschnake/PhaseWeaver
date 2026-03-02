@@ -117,7 +117,7 @@ def test_inverse_enforces_projection_constraints(grid, gaussian_density):
 
     # perturb phase to force some negative ringing in time after inverse
     phase1 = ff.phase + 0.3 * np.sin(np.linspace(0, 10, ff.phase.size))
-    ff1 = FormFactor(ff.grid, ff.mag, phase1, eps=ff.eps)
+    ff1 = FormFactor(ff.grid, ff.mag, phase1)
 
     prof1 = Profile.from_form_factor(ff1)
 
@@ -135,8 +135,8 @@ def rms(t, p):
 def test_roundtrip_preserves_rms_width(grid, gaussian_density):
     prof0 = Profile(grid, gaussian_density)
     tr = DCPhysicalRFFT(dc_normalize=False, unwrap_phase=True)
-    g2, mag, phase, eps = tr.profile_to_form_factor(prof0)
-    ff = FormFactor(g2, mag, phase, eps=eps)
+    g2, mag, phase = tr.profile_to_form_factor(prof0)
+    ff = FormFactor(g2, mag, phase)
     prof1 = Profile.from_form_factor(ff, transform=tr)
 
     w0 = rms(grid.t, prof0.values)
@@ -147,7 +147,7 @@ def test_roundtrip_preserves_rms_width(grid, gaussian_density):
 def test_centered_gaussian_has_near_zero_phase(grid, gaussian_density):
     prof = Profile(grid, gaussian_density)
     tr = DCPhysicalRFFT(dc_normalize=False, unwrap_phase=True)
-    _, mag, phase, _ = tr.profile_to_form_factor(prof)
+    _, mag, phase = tr.profile_to_form_factor(prof)
 
     m = mag > mag.max() * 1e-6
     # Gaussian FT is positive-real; phase should be ~0 where signal exists

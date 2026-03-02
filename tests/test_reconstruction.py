@@ -5,25 +5,25 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
-from phase_weaver.core.base import Grid, Profile, FormFactor, DCPhysicalRFFT
-from phase_weaver.core.reconstruction import (
-    PhaseInitializer,
-    PredefinedPhase,
-    StopCriterion,
-    ZeroPhase,
-    RandomPhase,
-    MinimumPhaseCepstrum,
-    StopCriteria,
-    MaxIter,
-    PhaseStoppedChanging,
-    GSMagnitudeOnly,
-)
+from phase_weaver.core.base import DCPhysicalRFFT, FormFactor, Grid, Profile
 from phase_weaver.core.constraints import (
     ClampMagnitude,
     EnforceDCOne,
     FrequencyConstraints,
 )
-
+from phase_weaver.core.reconstruction import (
+    GSMagnitudeOnly,
+    GaussianInitializer,
+    MagnitudeInitializer,
+    MaxIter,
+    MinimumPhaseCepstrum,
+    MinIter,
+    PhaseStoppedChanging,
+    PredefinedPhase,
+    RandomPhase,
+    StopCriteria,
+    ZeroPhase,
+)
 from phase_weaver.core.utils import trapz_uniform
 
 
@@ -53,30 +53,36 @@ def _processed_meas_mag(grid: Grid, mag: np.ndarray, eps: float = 1e-30) -> np.n
 # Phase initializers
 # -----------------------------------------------------------------------------
 
+
 def test_zero_phase_initializer_shape(grid: Grid):
     mag = np.ones(grid.N // 2 + 1)
-    ph = ZeroPhase().init_phase(mag, grid, eps_mag=1e-30)
-    assert ph.shape == mag.shape
-    assert_allclose(ph, 0.0)
+    ff = ZeroPhase()(grid=grid, mag=mag)
+    assert ff.mag.shape == ff.phase.shape
+    assert_allclose(ff.phase, 0.0)
+
+
 
 
 def test_random_phase_initializer_deterministic(grid: Grid):
-    mag = np.ones(grid.N // 2 + 1)
-    init1 = RandomPhase(seed=123).init_phase(mag, grid, eps_mag=1e-30)
-    init2 = RandomPhase(seed=123).init_phase(mag, grid, eps_mag=1e-30)
-    assert init1.shape == mag.shape
+    init1 = RandomPhase().initialize_phase(grid, eps_mag=1e-30, seed=42)
+    init2 = RandomPhase().initialize_phase(grid, eps_mag=1e-30, seed=42)
+    assert init1.shape == (grid.N // 2 + 1,)
     assert_allclose(init1, init2)
 
 
 def test_minimum_phase_initializer_shape_mismatch_raises(grid: Grid):
     mag_bad = np.ones(grid.N // 2)  # wrong length
     with pytest.raises(ValueError):
-        MinimumPhaseCepstrum().init_phase(mag_bad, grid, eps_mag=1e-30)
+        MinimumPhaseCepstrum().initialize_phase(grid, mag=mag_bad)
+    
+def test_minimum_phase_initializer_mag_not_defined_raises(grid: Grid):
+    with pytest.raises(ValueError):
+        MinimumPhaseCepstrum().initialize_phase(grid, mag=None)
 
 
 def test_minimum_phase_initializer_returns_finite(grid: Grid):
     mag = np.linspace(1.0, 0.1, grid.N // 2 + 1)
-    ph = MinimumPhaseCepstrum().init_phase(mag, grid, eps_mag=1e-30)
+    ph = MinimumPhaseCepstrum().initialize_phase(grid, mag=mag)
     assert ph.shape == mag.shape
     assert np.isfinite(ph).all()
 
@@ -85,58 +91,82 @@ def test_minimum_phase_initializer_returns_finite(grid: Grid):
 # Stop criteria
 # -----------------------------------------------------------------------------
 
-def test_maxiter_stops_after_n_updates(grid: Grid, gaussian_density: np.ndarray, measured_mag: np.ndarray):
-    prof = Profile(grid=grid, values=gaussian_density, charge=None)
-    ff = FormFactor(grid=grid, mag=measured_mag.copy(), phase=np.zeros_like(measured_mag))
 
-    s = MaxIter(3)
-    s.reset()
-    assert s.update(prof, ff) is False  # 1
-    assert s.update(prof, ff) is False  # 2
-    assert s.update(prof, ff) is True   # 3
+def test_maxiter_stops_after_n_updates(
+    grid: Grid, gaussian_density: np.ndarray, measured_mag: np.ndarray
+):
+    stop = MaxIter(3)
+    stop.reset()
+    assert stop() is False
+    stop.update()  # 1
+    assert stop() is False
+    stop.update()  # 2
+    assert stop() is False
+    stop.update()  # 3
+    assert stop() is True
 
 
-def test_phase_stopped_changing_patience(grid: Grid, gaussian_density: np.ndarray, measured_mag: np.ndarray):
-    prof = Profile(grid=grid, values=gaussian_density, charge=None)
+def test_stop_criteria_maxiter_miniter():
+    max_iter = MaxIter(5)
+    min_iter = MinIter(3)
+    stop = max_iter + min_iter  # combined stop criterion
+    stop.reset()
+    assert stop() is False
+    assert max_iter() is False
+    assert min_iter() is False
+    stop.update()  # iter 1
+    stop.update()  # iter 2
+    stop.update()  # iter 3 - min_iter should now allow stopping, but max_iter not yet
+    assert stop() is False  # min_iter allows stop, but max_iter does not yet
+    assert min_iter() is True
+    stop.update()  # iter 4
+    assert stop() is False  # still not at max_iter
+    stop.update()  # iter 5
+    assert stop() is True  # now max_iter allows stopping
+
+
+def test_phase_stopped_changing_patience(
+    grid: Grid, gaussian_density: np.ndarray, measured_mag: np.ndarray
+):
     phase = np.zeros_like(measured_mag)
     ff = FormFactor(grid=grid, mag=measured_mag.copy(), phase=phase)
 
-    s = PhaseStoppedChanging(tol=1e-12, patience=3)
+    s = PhaseStoppedChanging(tol=1e-12, patience=2)
     s.reset()
+    s.update(last_ff=None, post_ff=ff) # first update, last_ff is None, should not stop
+    assert s.stop is False
+    s.update(last_ff=ff, post_ff=ff)  # identical phase, mse = 0, but should not stop yet due to patience
+    assert s.stop is False
+    s.update(last_ff=ff, post_ff=ff)  # identical phase again, mse = 0, should now stop due to patience
+    assert s.stop is True
 
-    # First call: last phase not set => inf mse => no stop
-    assert s.update(prof, ff) is False
+def test_magnitude_initializer(grid: Grid):
+    class DummyMagInit(MagnitudeInitializer):
+        name = "dummy"
+        def initialize_magnitude(self, grid: Grid) -> np.ndarray:
+            return np.ones_like(grid.f_pos)
+    mag_init = DummyMagInit()
+    ff = mag_init(grid)
+    assert ff.grid.N == grid.N
+    assert ff.mag.shape == (grid.N // 2 + 1,)
 
-    # Now keep phase identical -> mse ~ 0, should stop after patience
-    assert s.update(prof, ff) is False
-    assert s.update(prof, ff) is False
-    assert s.update(prof, ff) is True
-
-
-def test_stopcriteria_any_and_all(grid: Grid, gaussian_density: np.ndarray, measured_mag: np.ndarray):
-    prof = Profile(grid=grid, values=gaussian_density, charge=None)
-    ff = FormFactor(grid=grid, mag=measured_mag.copy(), phase=np.zeros_like(measured_mag))
-
-    class AlwaysTrue(MaxIter):
-        def update(self, prof, ff) -> bool:
-            return True
-
-    class AlwaysFalse(MaxIter):
-        def update(self, prof, ff) -> bool:
-            return False
-
-    s_any = StopCriteria(AlwaysFalse(1), AlwaysTrue(1), logic="any")
-    s_any.reset()
-    assert s_any.update(prof, ff) is True
-
-    s_all = StopCriteria(AlwaysFalse(1), AlwaysTrue(1), logic="all")
-    s_all.reset()
-    assert s_all.update(prof, ff) is False
+def test_gaussian_initializer(grid: Grid):
+    mag_init = GaussianInitializer()
+    ff = mag_init(grid, sigma=0.1e-12)
+    assert ff.grid.N == grid.N
+    assert ff.mag.shape == (grid.N // 2 + 1,)
+    assert np.all(ff.mag > 0)
+    assert np.all(ff.phase == 0)
+    with pytest.raises(KeyError):
+        mag_init(grid)
+    with pytest.raises(ValueError):
+        mag_init(grid, sigma=-0.1e-12)
 
 
 # -----------------------------------------------------------------------------
 # GSMagnitudeOnly: validation and end-to-end
 # -----------------------------------------------------------------------------
+
 
 def test_gs_magnitude_only_rejects_wrong_mag_shape(grid: Grid):
     alg = GSMagnitudeOnly(stop=MaxIter(1))
@@ -181,13 +211,17 @@ def test_gs_end_to_end_constraints_and_outputs(grid: Grid, measured_mag: np.ndar
     # --- FormFactor magnitude is the imposed measurement magnitude (after preprocessing) ---
     mag_meas = _processed_meas_mag(grid, measured_mag, eps=alg.eps_mag)
     assert ff.mag.shape == mag_meas.shape
-    assert_allclose(ff.mag, mag_meas, rtol=0, atol=0.0)  # exact copy assignment in algorithm
+    assert_allclose(
+        ff.mag, mag_meas, rtol=0, atol=0.0
+    )  # exact copy assignment in algorithm
 
     # DC normalized by EnforceDCOne
     assert ff.mag[0] == pytest.approx(1.0)
 
 
-def test_gs_end_to_end_reconstruction_is_reasonable(grid: Grid, gaussian_density: np.ndarray):
+def test_gs_end_to_end_reconstruction_is_reasonable(
+    grid: Grid, gaussian_density: np.ndarray
+):
     """
     True end-to-end: generate a profile -> compute its magnitude -> reconstruct -> compare moments.
 
@@ -206,6 +240,7 @@ def test_gs_end_to_end_reconstruction_is_reasonable(grid: Grid, gaussian_density
 
     # Compare RMS width (should be close)gg
     t = grid.t
+
     def rms(p):
         mu = np.trapezoid(t * p, t)
         return np.sqrt(np.trapezoid((t - mu) ** 2 * p, t))
@@ -219,47 +254,34 @@ def test_gs_end_to_end_reconstruction_is_reasonable(grid: Grid, gaussian_density
     assert abs(np.trapezoid(prof1.values, t) - 1.0) < 1e-8
 
 
-def test_raise_nonimpl_phase_initializer(grid: Grid):
-    class NotImplementedPhaseInit(PhaseInitializer):
-        name = "not_implemented"
-        def init_phase(self, mag_pos: np.ndarray, grid: Grid, eps_mag: float) -> np.ndarray:
-            super().init_phase(mag_pos, grid, eps_mag=eps_mag)
-    not_imp = NotImplementedPhaseInit()
-
-
-    with pytest.raises(NotImplementedError):
-        not_imp.init_phase(np.ones(grid.N // 2 + 1), grid, eps_mag=1e-30)
-
-
-def test_raise_logic_error_in_stopcriteria(grid: Grid):
-    with pytest.raises(ValueError):
-        StopCriteria(MaxIter(1), logic="invalid_logic")
-
-
-def test_stopcriteria_all_logic(grid: Grid, gaussian_density: np.ndarray, measured_mag: np.ndarray):
-    prof = Profile(grid=grid, values=gaussian_density, charge=None)
-    ff = FormFactor(grid=grid, mag=measured_mag.copy(), phase=np.zeros_like(measured_mag))
-
-    class AlwaysTrue(MaxIter):
-        def update(self, prof, ff) -> bool:
-            return True
-
-    class AlwaysFalse(MaxIter):
-        def update(self, prof, ff) -> bool:
-            return False
-
-    s_all = StopCriteria(AlwaysTrue(1), AlwaysTrue(1), logic="all")
-    s_all.reset()
-    assert s_all.update(prof, ff) is True  # both must be True to stop
-
-
 def test_predefined_phase(grid: Grid, measured_mag: np.ndarray):
     phase_init = PredefinedPhase(phase=np.zeros_like(measured_mag))
-    
-    phase = phase_init.init_phase(measured_mag, grid, eps_mag=1e-30)
+
+    phase = phase_init.initialize_phase(grid, mag=measured_mag, eps_mag=1e-30)
     assert phase.shape == measured_mag.shape
     assert_allclose(phase, 0.0)
 
-    phase_init = PredefinedPhase(phase=np.zeros(1)) # wrong shape
+    phase_init = PredefinedPhase(phase=np.zeros(1))  # wrong shape
     with pytest.raises(ValueError):
-        phase_init.init_phase(measured_mag, grid, eps_mag=1e-30)
+        phase_init.initialize_phase(grid, mag=measured_mag, eps_mag=1e-30)
+
+
+def test_merge_stop_criteria():
+    c1 = MinIter(3)
+    c2 = PhaseStoppedChanging(tol=1e-8, patience=5)
+    c3 = MaxIter(5)
+    stop1 = c1 + c2
+    stop2 = c2 + c3
+    assert isinstance(stop1, StopCriteria)
+    assert isinstance(stop2, StopCriteria)
+    assert len(stop1.criteria) == 2
+    assert len(stop2.criteria) == 2
+    stop3 = stop1 + c3
+    assert isinstance(stop3, StopCriteria)
+    assert len(stop3.criteria) == 3
+    stop4 = stop1 + stop2
+    assert isinstance(stop4, StopCriteria)
+    assert len(stop4.criteria) == 4
+
+    with pytest.raises(ValueError):
+        stop1 + "not a criterion"
