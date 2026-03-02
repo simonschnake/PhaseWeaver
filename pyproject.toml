@@ -25,4 +25,4 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-phase_weaver = ["stylelib/*.mplstyle"]
+phase_weaver = ["icon.png", "stylelib/*.mplstyle"]
