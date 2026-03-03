@@ -1,7 +1,7 @@
 
 import pytest
 
-from phase_weaver.core.constraints import FrequencyConstraint, FrequencyConstraints, NonNegativity, NormalizeArea, TimeConstraint, TimeConstraints, ReplacePhaseEndLinear
+from phase_weaver.core.constraints import FrequencyConstraint, FrequencyConstraints, NonNegativity, NormalizeArea, ReplacePhaseEndLinearShift, TimeConstraint, TimeConstraints, ReplacePhaseEndLinear
 from phase_weaver.core.base import FormFactor, Profile, Grid
 import numpy as np
 
@@ -99,3 +99,30 @@ def test_replace_phase_end_linear(grid):
 
     with pytest.raises(ValueError):
         ReplacePhaseEndLinear(grid=grid, start_freq=2 * grid.f_pos[-1], alpha=alpha)
+
+
+def test_replace_phase_end_linear_shift():
+    grid = Grid.from_df_fmax(df=1, f_max=100, snap_pow2=False)
+    start_freq = 50.0
+    freq_x = 100.0
+    freq_y = 150.0
+    phase = np.arange(101, dtype=float)  # some arbitrary phase profile
+    phase_after = np.copy(phase)
+
+    phase_after[phase_after >= 50.] = 2 * phase_after[phase_after >= 50.] - 50.
+    ff = FormFactor(grid=grid, mag=np.ones(grid.N // 2 + 1), phase=phase)
+    constraint = ReplacePhaseEndLinearShift(grid=grid, start_freq=start_freq, freq_x=freq_x, freq_y=freq_y)
+    constraint.apply(ff) 
+    assert np.allclose(ff.phase, phase_after, atol=1e-6)
+
+    with pytest.raises(ValueError):
+        ReplacePhaseEndLinearShift(grid=grid, start_freq=-1.0, freq_x=freq_x, freq_y=freq_y)
+
+    with pytest.raises(ValueError):
+        ReplacePhaseEndLinearShift(grid=grid, start_freq=120.0, freq_x=freq_x, freq_y=freq_y)
+
+    with pytest.raises(ValueError):
+        ReplacePhaseEndLinearShift(grid=grid, start_freq=start_freq, freq_x=40.0, freq_y=freq_y)
+
+    with pytest.raises(ValueError):
+        ReplacePhaseEndLinearShift(grid=grid, start_freq=start_freq, freq_x=120.0, freq_y=freq_y)

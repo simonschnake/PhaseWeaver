@@ -1,14 +1,12 @@
-from dataclasses import dataclass
-from importlib.resources import files
 import sys
+from dataclasses import dataclass
 
 import numpy as np
-import phase_weaver.rc_resources
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -25,6 +23,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from phase_weaver.core.utils import fwhm_highest_peak
+import phase_weaver.rc_resources
 from phase_weaver.core import DCPhysicalRFFT
 from phase_weaver.core.constraints import (
     CenterFirstMoment,
@@ -32,13 +32,13 @@ from phase_weaver.core.constraints import (
     EnforceDCOne,
     NonNegativity,
     NormalizeArea,
-    ReplacePhaseEndLinear,  # adjust if your class has a different name
+    ReplacePhaseEndLinearShift,  
 )
 from phase_weaver.core.reconstruction import (
     GSMagnitudeOnly,
     MaxIter,
-    MinIter,
     MinimumPhaseCepstrum,
+    MinIter,
     PhaseStoppedChanging,
     PredefinedPhase,
     RandomPhase,
@@ -109,6 +109,7 @@ def load_app_icon() -> QIcon:
     except Exception:
         return QIcon()
 
+
 class MplCanvas(FigureCanvas):
     def __init__(self):
         fig = Figure(constrained_layout=True)
@@ -174,7 +175,62 @@ class MainWindow(QMainWindow):
         (self.line_recon,) = self.canvas.ax_time.plot(
             [], [], label="reconstructed", linestyle="--", alpha=0.9
         )
-        self.canvas.ax_time.legend(loc="upper right", fontsize="small")
+
+        # FWHM overlay bars (time-domain)
+        (self.line_fwhm_input,) = self.canvas.ax_time.plot(
+            [], [],
+            linewidth=3.0,
+            color=self.line_current.get_color(),
+            alpha=0.95,
+            solid_capstyle="butt",
+            zorder=5,
+        )
+        (self.line_fwhm_recon,) = self.canvas.ax_time.plot(
+            [], [],
+            linewidth=3.0,
+            color=self.line_recon.get_color(),
+            alpha=0.95,
+            solid_capstyle="butt",
+            zorder=5,
+        )
+
+        # small end markers so the measured interval is easy to see
+        (self.line_fwhm_input_caps,) = self.canvas.ax_time.plot(
+            [], [],
+            linestyle="None",
+            marker="|",
+            markersize=12,
+            color=self.line_current.get_color(),
+            zorder=6,
+        )
+        (self.line_fwhm_recon_caps,) = self.canvas.ax_time.plot(
+            [], [],
+            linestyle="None",
+            marker="|",
+            markersize=12,
+            color=self.line_recon.get_color(),
+            zorder=6,
+        )
+
+        # text labels at the side of the time plot
+        self.text_fwhm_input = self.canvas.ax_time.text(
+            0.985, 0.98, "",
+            transform=self.canvas.ax_time.transAxes,
+            ha="right", va="top",
+            fontsize="small",
+            color=self.line_current.get_color(),
+            bbox=dict(boxstyle="round,pad=0.2", fc=(0, 0, 0, 0.18), ec="none"),
+        )
+        self.text_fwhm_recon = self.canvas.ax_time.text(
+            0.985, 0.90, "",
+            transform=self.canvas.ax_time.transAxes,
+            ha="right", va="top",
+            fontsize="small",
+            color=self.line_recon.get_color(),
+            bbox=dict(boxstyle="round,pad=0.2", fc=(0, 0, 0, 0.18), ec="none"),
+        )
+
+        self.canvas.ax_time.legend(loc="upper left", fontsize="small")
         self.canvas.ax_time.set_xlabel(f"t ({TIME_UNIT})")
         self.canvas.ax_time.set_ylabel("Current (kA)")
 
@@ -367,11 +423,11 @@ class MainWindow(QMainWindow):
         constraints = ClampMagnitude(eps=1e-6) + EnforceDCOne()
 
         if self._ui_state.linear_phase_end:
-            alpha = self._ui_state.linear_phase_end_phase_at_300_thz / PHASE_END_REF_FREQ_HZ
-            constraints = constraints + ReplacePhaseEndLinear(
+            constraints = constraints + ReplacePhaseEndLinearShift(
                 grid=self.model.grid,
                 start_freq=self._ui_state.linear_phase_end_start_freq_hz,
-                alpha=alpha,
+                freq_x=PHASE_END_REF_FREQ_HZ,
+                freq_y=self._ui_state.linear_phase_end_phase_at_300_thz,
             )
 
         return constraints
@@ -491,19 +547,21 @@ class MainWindow(QMainWindow):
         form = QFormLayout(form_widget)
         form.setContentsMargins(0, 0, 0, 0)
 
-        f_max_thz = 300.0 
-        start_init_thz = 200 
+        f_max_thz = 300.0
+        start_init_thz = 200
 
-        self._phase_end_start_slider, self._phase_end_start_spin = self._make_slider_spin(
-            0.0, f_max_thz, 0.1, start_init_thz
+        self._phase_end_start_slider, self._phase_end_start_spin = (
+            self._make_slider_spin(0.0, f_max_thz, 0.1, start_init_thz)
         )
         form.addRow(
             QLabel("start freq (THz)"),
             self._row(self._phase_end_start_slider, self._phase_end_start_spin),
         )
 
-        self._phase_end_phase_slider, self._phase_end_phase_spin = self._make_slider_spin(
-            -300.0, 300.0, 1.0, self._ui_state.linear_phase_end_phase_at_300_thz
+        self._phase_end_phase_slider, self._phase_end_phase_spin = (
+            self._make_slider_spin(
+                -300.0, 300.0, 1.0, self._ui_state.linear_phase_end_phase_at_300_thz
+            )
         )
         form.addRow(
             QLabel("phase @ 300 THz"),
@@ -514,10 +572,18 @@ class MainWindow(QMainWindow):
         self._phase_end_controls_widget = form_widget
         self._phase_end_controls_widget.setEnabled(True)
 
-        self._phase_end_start_slider.valueChanged.connect(self._on_phase_end_params_changed)
-        self._phase_end_start_spin.valueChanged.connect(self._on_phase_end_params_changed)
-        self._phase_end_phase_slider.valueChanged.connect(self._on_phase_end_params_changed)
-        self._phase_end_phase_spin.valueChanged.connect(self._on_phase_end_params_changed)
+        self._phase_end_start_slider.valueChanged.connect(
+            self._on_phase_end_params_changed
+        )
+        self._phase_end_start_spin.valueChanged.connect(
+            self._on_phase_end_params_changed
+        )
+        self._phase_end_phase_slider.valueChanged.connect(
+            self._on_phase_end_params_changed
+        )
+        self._phase_end_phase_spin.valueChanged.connect(
+            self._on_phase_end_params_changed
+        )
 
         return gb
 
@@ -535,8 +601,12 @@ class MainWindow(QMainWindow):
         self._invalidate_reconstruction(redraw=False)
 
     def _on_phase_end_params_changed(self, _=None):
-        self._ui_state.linear_phase_end_start_freq_hz = self._phase_end_start_spin.value() * 1e12
-        self._ui_state.linear_phase_end_phase_at_300_thz = self._phase_end_phase_spin.value()
+        self._ui_state.linear_phase_end_start_freq_hz = (
+            self._phase_end_start_spin.value() * 1e12
+        )
+        self._ui_state.linear_phase_end_phase_at_300_thz = (
+            self._phase_end_phase_spin.value()
+        )
         self._invalidate_reconstruction(redraw=False)
 
     def _make_gaussian_group(
@@ -626,7 +696,38 @@ class MainWindow(QMainWindow):
             phase_rec = None
 
         t_ui = self.model.grid.t * S_TO_T
-        self.line_current.set_data(t_ui, I_in * 1e-3)
+
+        I_in_plot = I_in * 1e-3  # kA
+        self.line_current.set_data(t_ui, I_in_plot)
+        self._update_fwhm_overlay(
+            t_ui,
+            I_in_plot,
+            self.line_fwhm_input,
+            self.line_fwhm_input_caps,
+            self.text_fwhm_input,
+            "input",
+        )
+
+        if I_rec is not None:
+            I_rec_plot = I_rec * 1e-3  # kA
+            self.line_recon.set_visible(True)
+            self.line_recon.set_data(t_ui, I_rec_plot)
+            self._update_fwhm_overlay(
+                t_ui,
+                I_rec_plot,
+                self.line_fwhm_recon,
+                self.line_fwhm_recon_caps,
+                self.text_fwhm_recon,
+                "recon",
+            )
+        else:
+            self.line_recon.set_visible(False)
+            self._hide_fwhm_overlay(
+                self.line_fwhm_recon,
+                self.line_fwhm_recon_caps,
+                self.text_fwhm_recon,
+                "recon",
+            )
 
         if I_rec is not None:
             self.line_recon.set_visible(True)
@@ -751,16 +852,47 @@ class MainWindow(QMainWindow):
         if path:
             self.canvas.figure.savefig(path, dpi=150)
 
+    def _hide_fwhm_overlay(self, bar_line, cap_line, text_obj, label: str):
+        bar_line.set_visible(False)
+        cap_line.set_visible(False)
+        text_obj.set_text(f"{label} FWHM: n/a")
+
+    def _update_fwhm_overlay(self, t_fs, y_plot, bar_line, cap_line, text_obj, label: str):
+        """
+        t_fs: time axis in fs
+        y_plot: plotted y-data (already in kA here)
+        """
+        res = fwhm_highest_peak(t_fs, y_plot)
+
+        if res is None:
+            self._hide_fwhm_overlay(bar_line, cap_line, text_obj, label)
+            return
+
+        width, x_left, x_right, y_half = res
+
+        # horizontal bar at the actual measurement level
+        bar_line.set_data([x_left, x_right], [y_half, y_half])
+        bar_line.set_visible(True)
+
+        # small end caps
+        cap_line.set_data([x_left, x_right], [y_half, y_half])
+        cap_line.set_visible(True)
+
+        text_obj.set_text(f"{label} FWHM: {width:.2f} {TIME_UNIT}")
+
 
 def main() -> int:
     app = QApplication(sys.argv)
     app.setWindowIcon(load_app_icon())
+    app.setApplicationName("Phase Weaver")
+    app.setApplicationDisplayName("Phase Weaver")
 
     set_dark_theme(app)
     apply_mpl_style()
     sync_mpl_to_qt(app)
 
     w = MainWindow()
+    w.setWindowTitle("Phase Weaver")
     w.setWindowIcon(load_app_icon())
     w.show()
     return app.exec()

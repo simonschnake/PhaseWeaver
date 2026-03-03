@@ -129,3 +129,37 @@ class ReplacePhaseEndLinear(FrequencyConstraint):
 
     def apply(self, ff: "FormFactor") -> None:
         ff.phase[self._replace_mask] = self._values
+
+
+class ReplacePhaseEndLinearShift(FrequencyConstraint):
+    def __init__(self, grid: "Grid", start_freq: float, freq_x: float, freq_y: float):
+        self.grid = grid
+        self.start_freq = start_freq
+        self.freq_x = freq_x
+        self.freq_y = freq_y
+
+        if self.start_freq < 0:
+            raise ValueError("start_freq must be non-negative")
+
+        self._replace_mask = (self.grid.f_pos >= self.start_freq)
+        if not np.any(self._replace_mask):
+            raise ValueError("start_freq is above the maximum frequency in the grid")
+
+        if self.freq_x <= self.start_freq:
+            raise ValueError("freq_x must be greater than start_freq")
+        
+        if self.freq_x > self.grid.f_pos[-1]:
+            raise ValueError("freq_x must be less than or equal to the maximum frequency in the grid")
+
+        self._freqs_mask = self.grid.f_pos[self._replace_mask]
+        self._start_x = self._freqs_mask[0]
+
+    def apply(self, ff: "FormFactor") -> None:
+        self._start_y = ff.phase[self._replace_mask][0]
+        slope = (self.freq_y - self._start_y) / (self.freq_x - self._start_x)
+        values = slope * (self._freqs_mask - self._start_x) + self._start_y
+        ff.phase[self._replace_mask] = values
+
+
+        
+
