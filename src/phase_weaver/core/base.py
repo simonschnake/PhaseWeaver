@@ -224,11 +224,16 @@ class Transform(ABC):
         raise NotImplementedError
 
 
-@dataclass(frozen=True, slots=True)
 class DCPhysicalRFFT(Transform):
-    unwrap_phase: bool = True
-    dc_normalize: bool = True
-    eps_mag: float = np.finfo(float).eps
+    def __init__(
+        self,
+        unwrap_phase: bool = True,
+        dc_normalize: bool = True,
+        eps_mag: float | None = None,
+    ):
+        self.unwrap_phase = unwrap_phase
+        self.dc_normalize = dc_normalize
+        self.eps_mag = eps_mag if eps_mag is not None else np.finfo(float).eps
 
     def profile_to_form_factor(
         self, profile: CurrentProfile
@@ -257,3 +262,81 @@ class DCPhysicalRFFT(Transform):
         x = np.fft.fftshift(x_shift)
 
         return form_factor.grid, x
+
+
+class BandLimitedDCPhysicalRFFT(DCPhysicalRFFT):
+    def __init__(
+        self,
+        f_cut: float,
+        compact: bool = True,
+        unwrap_phase: bool = True,
+        dc_normalize: bool = True,
+        eps_mag: float | None = None,
+    ):
+        super().__init__(
+            unwrap_phase=unwrap_phase, dc_normalize=dc_normalize, eps_mag=eps_mag
+        )
+        self.f_cut = f_cut
+        self.compact = compact
+        if self.f_cut <= 0:
+            raise ValueError("f_cut must be positive.")
+
+    def _k_cut(self, grid: Grid) -> int:
+        # Largest retained positive-frequency bin index
+        if self.f_cut >= grid.f_nyq:
+            return grid.N // 2
+        return int(np.floor(self.f_cut / grid.df))
+
+    def profile_to_form_factor(
+        self, profile: CurrentProfile
+    ) -> tuple[Grid, np.ndarray, np.ndarray]:
+        grid, mag, phase = super().profile_to_form_factor(profile)
+        k_cut = self._k_cut(grid)
+
+        if self.compact:
+            # Keep only DC .. cutoff
+            return grid, mag[: k_cut + 1].copy(), phase[: k_cut + 1].copy()
+
+        # Keep full length, but hard-zero everything above cutoff
+        mag_lp = mag.copy()
+        phase_lp = phase.copy()
+        mag_lp[k_cut + 1 :] = 0.0
+        phase_lp[k_cut + 1 :] = 0.0
+        return grid, mag_lp, phase_lp
+
+    def form_factor_to_profile(
+        self, form_factor: FormFactor
+    ) -> tuple[Grid, np.ndarray]:
+        mag = np.asarray(form_factor.mag, dtype=float)
+        phase = np.asarray(form_factor.phase, dtype=float)
+
+        if mag.ndim != 1 or phase.ndim != 1:
+            raise ValueError("mag and phase must be 1D arrays.")
+        if mag.shape != phase.shape:
+            raise ValueError("mag and phase must have the same shape.")
+
+        n_full = form_factor.grid.N // 2 + 1
+        if len(mag) > n_full:
+            raise ValueError("Too many positive-frequency bins for this grid.")
+
+        # If compact, zero-pad the missing high-frequency bins
+        if len(mag) < n_full:
+            mag_full = np.zeros(n_full, dtype=float)
+            phase_full = np.zeros(n_full, dtype=float)
+            mag_full[: len(mag)] = mag
+            phase_full[: len(phase)] = phase
+
+            F_pos = np.maximum(mag_full, self.eps_mag) * np.exp(1j * phase_full)
+            x_shift = np.fft.irfft(F_pos, n=form_factor.grid.N) / form_factor.grid.dt
+            x = np.fft.fftshift(x_shift)
+            return form_factor.grid, x
+
+        # Already full-length
+        return super().form_factor_to_profile(form_factor)
+
+    def f_pos_used(self, grid: Grid) -> np.ndarray:
+        """
+        Frequency axis corresponding to the retained bins in compact mode.
+        """
+        k_cut = self._k_cut(grid)
+        return grid.f_pos[: k_cut + 1]

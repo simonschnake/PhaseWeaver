@@ -1,8 +1,17 @@
-import numpy as np
-from numpy.testing import assert_allclose
-import pytest
+from types import SimpleNamespace
 
-from phase_weaver.core import Profile, CurrentProfile, DCPhysicalRFFT, FormFactor, Transform
+import numpy as np
+import pytest
+from numpy.testing import assert_allclose
+
+from phase_weaver.core import (
+    BandLimitedDCPhysicalRFFT,
+    CurrentProfile,
+    DCPhysicalRFFT,
+    FormFactor,
+    Profile,
+    Transform,
+)
 
 
 def test_dc_normalization_makes_mag0_one(grid, gaussian_density):
@@ -178,8 +187,201 @@ def test_transform_raise_not_implemented(grid, gaussian_density):
     tr = DummyTransform()
     prof = Profile(grid=grid, values=gaussian_density)
     ff = FormFactor.from_profile(prof)
-    
+
     with pytest.raises(NotImplementedError):
         tr.profile_to_form_factor(prof)
     with pytest.raises(NotImplementedError):
         tr.form_factor_to_profile(ff)
+
+
+def test_bandlimited_rejects_nonpositive_cutoff():
+    with pytest.raises(ValueError, match="f_cut must be positive."):
+        BandLimitedDCPhysicalRFFT(f_cut=0.0)
+
+    with pytest.raises(ValueError, match="f_cut must be positive."):
+        BandLimitedDCPhysicalRFFT(f_cut=-1.0)
+
+
+def test_compact_forward_truncates_and_f_pos_used_matches(grid, gaussian_density):
+    prof = Profile(grid=grid, values=gaussian_density)
+
+    k_cut = 12
+    f_cut = (k_cut + 0.49) * grid.df
+
+    tr = BandLimitedDCPhysicalRFFT(
+        f_cut=f_cut,
+        compact=True,
+        dc_normalize=False,
+        unwrap_phase=True,
+    )
+    base = DCPhysicalRFFT(dc_normalize=False, unwrap_phase=True)
+
+    g1, mag, phase = tr.profile_to_form_factor(prof)
+    g2, mag_full, phase_full = base.profile_to_form_factor(prof)
+
+    assert g1 == g2 == grid
+    assert mag.shape == (k_cut + 1,)
+    assert phase.shape == (k_cut + 1,)
+
+    assert_allclose(mag, mag_full[: k_cut + 1], rtol=0, atol=0)
+    assert_allclose(phase, phase_full[: k_cut + 1], rtol=0, atol=0)
+    assert_allclose(tr.f_pos_used(grid), grid.f_pos[: k_cut + 1], rtol=0, atol=0)
+
+
+def test_cutoff_at_or_above_nyquist_keeps_full_spectrum(grid, gaussian_density):
+    prof = Profile(grid=grid, values=gaussian_density)
+
+    tr = BandLimitedDCPhysicalRFFT(
+        f_cut=2.0 * grid.f_nyq,
+        compact=True,
+        dc_normalize=False,
+        unwrap_phase=True,
+    )
+    base = DCPhysicalRFFT(dc_normalize=False, unwrap_phase=True)
+
+    _, mag, phase = tr.profile_to_form_factor(prof)
+    _, mag_ref, phase_ref = base.profile_to_form_factor(prof)
+
+    assert mag.shape == (grid.N // 2 + 1,)
+    assert phase.shape == (grid.N // 2 + 1,)
+    assert_allclose(mag, mag_ref, rtol=0, atol=0)
+    assert_allclose(phase, phase_ref, rtol=0, atol=0)
+    assert_allclose(tr.f_pos_used(grid), grid.f_pos, rtol=0, atol=0)
+
+
+def test_noncompact_forward_zeroes_bins_above_cutoff(grid, gaussian_density):
+    prof = Profile(grid=grid, values=gaussian_density)
+
+    k_cut = 9
+    f_cut = (k_cut + 0.25) * grid.df
+
+    tr = BandLimitedDCPhysicalRFFT(
+        f_cut=f_cut,
+        compact=False,
+        dc_normalize=False,
+        unwrap_phase=True,
+    )
+    base = DCPhysicalRFFT(dc_normalize=False, unwrap_phase=True)
+
+    _, mag_lp, phase_lp = tr.profile_to_form_factor(prof)
+    _, mag_full, phase_full = base.profile_to_form_factor(prof)
+
+    assert mag_lp.shape == (grid.N // 2 + 1,)
+    assert phase_lp.shape == (grid.N // 2 + 1,)
+
+    assert_allclose(mag_lp[: k_cut + 1], mag_full[: k_cut + 1], rtol=0, atol=0)
+    assert_allclose(phase_lp[: k_cut + 1], phase_full[: k_cut + 1], rtol=0, atol=0)
+
+    assert_allclose(mag_lp[k_cut + 1 :], 0.0, rtol=0, atol=0)
+    assert_allclose(phase_lp[k_cut + 1 :], 0.0, rtol=0, atol=0)
+
+
+def test_compact_inverse_matches_full_length_zero_padded_reference(
+    grid, gaussian_density
+):
+    prof = Profile(grid=grid, values=gaussian_density)
+
+    k_cut = 11
+    f_cut = (k_cut + 0.1) * grid.df
+
+    tr_compact = BandLimitedDCPhysicalRFFT(
+        f_cut=f_cut,
+        compact=True,
+        dc_normalize=False,
+        unwrap_phase=True,
+    )
+    base = DCPhysicalRFFT(dc_normalize=False, unwrap_phase=True)
+
+    _, mag_c, phase_c = tr_compact.profile_to_form_factor(prof)
+
+    # compact path: len(mag) < N//2 + 1
+    ff_compact = SimpleNamespace(grid=grid, mag=mag_c, phase=phase_c)
+    g_compact, x_compact = tr_compact.form_factor_to_profile(ff_compact)
+
+    # reference: same spectrum, explicitly zero-padded to full one-sided length
+    n_full = grid.N // 2 + 1
+    mag_full = np.zeros(n_full, dtype=float)
+    phase_full = np.zeros(n_full, dtype=float)
+    mag_full[: len(mag_c)] = mag_c
+    phase_full[: len(phase_c)] = phase_c
+
+    ff_full = FormFactor(grid=grid, mag=mag_full, phase=phase_full)
+    g_ref, x_ref = base.form_factor_to_profile(ff_full)
+
+    assert g_compact == g_ref == grid
+    assert x_compact.shape == (grid.N,)
+    assert_allclose(x_compact, x_ref, rtol=1e-12, atol=1e-12)
+
+
+def test_full_length_inverse_matches_base_inverse(grid, gaussian_density):
+    prof = Profile(grid=grid, values=gaussian_density)
+
+    tr = BandLimitedDCPhysicalRFFT(
+        f_cut=7.5 * grid.df,
+        compact=False,  # ensures full-length mag/phase
+        dc_normalize=False,
+        unwrap_phase=True,
+    )
+    base = DCPhysicalRFFT(dc_normalize=False, unwrap_phase=True)
+
+    ff = FormFactor.from_profile(prof, transform=tr)
+
+    g1, x1 = tr.form_factor_to_profile(ff)
+    g2, x2 = base.form_factor_to_profile(ff)
+
+    assert g1 == g2 == grid
+    assert x1.shape == (grid.N,)
+    assert_allclose(x1, x2, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "mag, phase, msg",
+    [
+        (np.zeros((2, 2)), np.zeros((2, 2)), "mag and phase must be 1D arrays."),
+        (np.zeros(3), np.zeros(4), "mag and phase must have the same shape."),
+    ],
+)
+def test_inverse_validates_mag_phase_shape(grid, mag, phase, msg):
+    tr = BandLimitedDCPhysicalRFFT(f_cut=1.0)
+
+    ff_bad = SimpleNamespace(grid=grid, mag=mag, phase=phase)
+    with pytest.raises(ValueError, match=msg):
+        tr.form_factor_to_profile(ff_bad)
+
+
+def test_inverse_rejects_too_many_bins(grid):
+    tr = BandLimitedDCPhysicalRFFT(f_cut=1.0)
+
+    n_too_many = grid.N // 2 + 2
+    ff_bad = SimpleNamespace(
+        grid=grid,
+        mag=np.zeros(n_too_many, dtype=float),
+        phase=np.zeros(n_too_many, dtype=float),
+    )
+
+    with pytest.raises(
+        ValueError, match="Too many positive-frequency bins for this grid."
+    ):
+        tr.form_factor_to_profile(ff_bad)
+
+
+def test_sub_df_cutoff_keeps_only_dc_and_reconstructs_constant_profile(
+    grid, gaussian_density
+):
+    prof = Profile(grid=grid, values=gaussian_density)
+
+    tr = BandLimitedDCPhysicalRFFT(
+        f_cut=0.5 * grid.df,  # floor(f_cut / df) == 0
+        compact=True,
+        dc_normalize=False,
+        unwrap_phase=True,
+    )
+
+    _, mag, phase = tr.profile_to_form_factor(prof)
+    ff_dc = SimpleNamespace(grid=grid, mag=mag, phase=phase)
+    _, x = tr.form_factor_to_profile(ff_dc)
+
+    assert mag.shape == (1,)
+    assert phase.shape == (1,)
+    assert x.shape == (grid.N,)
+    assert_allclose(x, np.full_like(x, x[0]), atol=1e-12)

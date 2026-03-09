@@ -23,8 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from phase_weaver.core.utils import fwhm_highest_peak
-import phase_weaver.rc_resources
+import phase_weaver.rc_resources  # noqa: F401
 from phase_weaver.core import DCPhysicalRFFT
 from phase_weaver.core.constraints import (
     CenterFirstMoment,
@@ -32,7 +31,7 @@ from phase_weaver.core.constraints import (
     EnforceDCOne,
     NonNegativity,
     NormalizeArea,
-    ReplacePhaseEndLinearShift,  
+    ReplacePhaseEndLinearSmooth,
 )
 from phase_weaver.core.reconstruction import (
     GSMagnitudeOnly,
@@ -41,9 +40,9 @@ from phase_weaver.core.reconstruction import (
     MinIter,
     PhaseStoppedChanging,
     PredefinedPhase,
-    RandomPhase,
     ZeroPhase,
 )
+from phase_weaver.core.utils import fwhm_highest_peak
 from phase_weaver.model.profile_model import ProfileModel, ProfileModelState
 from phase_weaver.mpl_style import apply_mpl_style, sync_mpl_to_qt
 from phase_weaver.qt_theme import set_dark_theme
@@ -59,7 +58,7 @@ TIME_UNIT = "fs"
 S_TO_T = 1e15
 T_TO_S = 1e-15
 
-PHASE_INIT_LABELS = ["zero", "random", "minphase", "last"]
+PHASE_INIT_LABELS = ["zero", "real", "minphase", "last"]
 PHASE_INIT_DEFAULT_INDEX = 2  # minphase
 
 SPIKE_SPEC = {
@@ -155,6 +154,8 @@ class MainWindow(QMainWindow):
         # --- registries ---
         self._controls: dict[tuple[str, str], tuple[QSlider, QDoubleSpinBox]] = {}
         self._selector_groups: dict[str, QButtonGroup] = {}
+        self._peak2_group: QGroupBox | None = None
+        self._phase_end_group: QGroupBox | None = None
 
         # --- reconstruction cache ---
         self._I_input = None
@@ -178,7 +179,8 @@ class MainWindow(QMainWindow):
 
         # FWHM overlay bars (time-domain)
         (self.line_fwhm_input,) = self.canvas.ax_time.plot(
-            [], [],
+            [],
+            [],
             linewidth=3.0,
             color=self.line_current.get_color(),
             alpha=0.95,
@@ -186,7 +188,8 @@ class MainWindow(QMainWindow):
             zorder=5,
         )
         (self.line_fwhm_recon,) = self.canvas.ax_time.plot(
-            [], [],
+            [],
+            [],
             linewidth=3.0,
             color=self.line_recon.get_color(),
             alpha=0.95,
@@ -196,7 +199,8 @@ class MainWindow(QMainWindow):
 
         # small end markers so the measured interval is easy to see
         (self.line_fwhm_input_caps,) = self.canvas.ax_time.plot(
-            [], [],
+            [],
+            [],
             linestyle="None",
             marker="|",
             markersize=12,
@@ -204,7 +208,8 @@ class MainWindow(QMainWindow):
             zorder=6,
         )
         (self.line_fwhm_recon_caps,) = self.canvas.ax_time.plot(
-            [], [],
+            [],
+            [],
             linestyle="None",
             marker="|",
             markersize=12,
@@ -214,17 +219,23 @@ class MainWindow(QMainWindow):
 
         # text labels at the side of the time plot
         self.text_fwhm_input = self.canvas.ax_time.text(
-            0.985, 0.98, "",
+            0.985,
+            0.98,
+            "",
             transform=self.canvas.ax_time.transAxes,
-            ha="right", va="top",
+            ha="right",
+            va="top",
             fontsize="small",
             color=self.line_current.get_color(),
             bbox=dict(boxstyle="round,pad=0.2", fc=(0, 0, 0, 0.18), ec="none"),
         )
         self.text_fwhm_recon = self.canvas.ax_time.text(
-            0.985, 0.90, "",
+            0.985,
+            0.90,
+            "",
             transform=self.canvas.ax_time.transAxes,
-            ha="right", va="top",
+            ha="right",
+            va="top",
             fontsize="small",
             color=self.line_recon.get_color(),
             bbox=dict(boxstyle="round,pad=0.2", fc=(0, 0, 0, 0.18), ec="none"),
@@ -257,14 +268,34 @@ class MainWindow(QMainWindow):
 
         # --- Controls ---
         controls = QWidget()
-        controls_layout = QVBoxLayout(controls)
+        controls_layout = QHBoxLayout(controls)
+
+        peak2_spec = {
+            **SPIKE_SPEC,
+            "center_fs": (-20.0, 20.0, 1.0, 10.0),
+        }
 
         gb_bg = self._make_gaussian_group(
-            "Background", which="background", spec=BACKGROUND_SPEC, include_center=False
+            "Background",
+            which="background",
+            spec=BACKGROUND_SPEC,
+            include_center=False,
         )
         gb_pk = self._make_gaussian_group(
-            "Spike", which="peak", spec=SPIKE_SPEC, include_center=True
+            "Spike",
+            which="peak",
+            spec=SPIKE_SPEC,
+            include_center=True,
         )
+        gb_pk2 = self._make_gaussian_group(
+            "Spike 2",
+            which="peak2",
+            spec=peak2_spec,
+            include_center=True,
+            checkable=True,
+            checked=False,
+        )
+
         phase_init_box = self._make_button_selector(
             key="phase_init",
             title="Phase Init",
@@ -287,12 +318,20 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(reset_btn)
         btn_layout.addWidget(export_btn)
 
-        controls_layout.addWidget(gb_bg)
-        controls_layout.addWidget(gb_pk)
-        controls_layout.addWidget(phase_init_box)
-        controls_layout.addWidget(phase_end_box)
-        controls_layout.addWidget(btn_row)
-        controls_layout.addStretch(1)
+        peak_col = QVBoxLayout()
+        peak_col.addWidget(gb_bg)
+        peak_col.addWidget(gb_pk)
+        peak_col.addWidget(gb_pk2)
+        peak_col.addStretch(1)
+
+        recon_col = QVBoxLayout()
+        recon_col.addWidget(phase_init_box)
+        recon_col.addWidget(phase_end_box)
+        recon_col.addWidget(btn_row)
+        recon_col.addStretch(1)
+
+        controls_layout.addLayout(peak_col, 1)
+        controls_layout.addLayout(recon_col, 1)
 
         # --- Timers ---
         self._update_timer = QTimer(self)
@@ -360,7 +399,7 @@ class MainWindow(QMainWindow):
                 self.center_prof.apply(prof)
 
             formfactor = prof.to_form_factor(transform=DCPhysicalRFFT())
-            reconstruction = self._build_reconstruction()
+            reconstruction = self._build_reconstruction(phase_in=formfactor.phase)
 
             prof_rec, ff_rec = reconstruction.run(
                 formfactor.mag,
@@ -391,24 +430,38 @@ class MainWindow(QMainWindow):
         self._phase_recon = None
         self._phase_in = None
 
-    def _build_reconstruction(self) -> GSMagnitudeOnly:
+    def _build_reconstruction(
+        self, phase_in: np.ndarray | None = None
+    ) -> GSMagnitudeOnly:
         return GSMagnitudeOnly(
             transform=self._recon_transform,
-            phase_init=self._make_phase_init(),
+            phase_init=self._make_phase_init(phase_in=phase_in),
             time_constraints=self._recon_time_constraints,
             frequency_constraints=self._make_frequency_constraints(),
             stop=self._recon_stop_condition,
         )
 
-    def _make_phase_init(self):
+    def _make_phase_init(self, phase_in: np.ndarray | None = None):
         mode = self._ui_state.phase_init_mode
 
         if mode == "zero":
             return ZeroPhase()
-        if mode == "random":
-            return RandomPhase()
+
+        if mode == "real":
+            if phase_in is None:
+                phase_in = self._phase_in
+
+            if phase_in is None:
+                prof = self.model.compute_profile()
+                if self.center_prof is not None:
+                    self.center_prof.apply(prof)
+                phase_in = prof.to_form_factor(transform=DCPhysicalRFFT()).phase
+
+            return PredefinedPhase(phase=np.array(phase_in, copy=True))
+
         if mode == "minphase":
             return MinimumPhaseCepstrum()
+
         if mode == "last":
             phase = (
                 self._phase_recon_last
@@ -423,11 +476,13 @@ class MainWindow(QMainWindow):
         constraints = ClampMagnitude(eps=1e-6) + EnforceDCOne()
 
         if self._ui_state.linear_phase_end:
-            constraints = constraints + ReplacePhaseEndLinearShift(
+            constraints = constraints + ReplacePhaseEndLinearSmooth(
                 grid=self.model.grid,
                 start_freq=self._ui_state.linear_phase_end_start_freq_hz,
                 freq_x=PHASE_END_REF_FREQ_HZ,
                 freq_y=self._ui_state.linear_phase_end_phase_at_300_thz,
+                favor=0.8,
+                power=2.0,
             )
 
         return constraints
@@ -489,7 +544,11 @@ class MainWindow(QMainWindow):
         return slider, spin
 
     def _register_control(
-        self, which: str, field: str, slider: QSlider, spin: QDoubleSpinBox
+        self,
+        which: str,
+        field: str,
+        slider: QSlider,
+        spin: QDoubleSpinBox,
     ):
         self._controls[(which, field)] = (slider, spin)
 
@@ -535,23 +594,27 @@ class MainWindow(QMainWindow):
 
     def _make_phase_end_box(self) -> QGroupBox:
         gb = QGroupBox("Linear Phase End")
-        outer = QVBoxLayout(gb)
+        gb.setCheckable(True)
+        gb.setChecked(self._ui_state.linear_phase_end)
+        gb.toggled.connect(self._on_phase_end_toggled)
+        self._phase_end_group = gb
 
-        self._phase_end_btn = QPushButton("Not applied")
-        self._phase_end_btn.setCheckable(True)
-        self._phase_end_btn.setChecked(False)
-        self._phase_end_btn.toggled.connect(self._on_phase_end_toggled)
-        outer.addWidget(self._phase_end_btn)
+        form = QFormLayout(gb)
 
-        form_widget = QWidget()
-        form = QFormLayout(form_widget)
-        form.setContentsMargins(0, 0, 0, 0)
-
-        f_max_thz = 300.0
-        start_init_thz = 200
+        f_max_thz = PHASE_END_REF_FREQ_HZ * 1e-12 - 0.1
+        start_init_thz = float(
+            np.clip(
+                self._ui_state.linear_phase_end_start_freq_hz * 1e-12, 0.0, f_max_thz
+            )
+        )
 
         self._phase_end_start_slider, self._phase_end_start_spin = (
-            self._make_slider_spin(0.0, f_max_thz, 0.1, start_init_thz)
+            self._make_slider_spin(
+                0.0,
+                f_max_thz,
+                0.1,
+                start_init_thz,
+            )
         )
         form.addRow(
             QLabel("start freq (THz)"),
@@ -560,17 +623,16 @@ class MainWindow(QMainWindow):
 
         self._phase_end_phase_slider, self._phase_end_phase_spin = (
             self._make_slider_spin(
-                -300.0, 300.0, 1.0, self._ui_state.linear_phase_end_phase_at_300_thz
+                -300.0,
+                300.0,
+                1.0,
+                self._ui_state.linear_phase_end_phase_at_300_thz,
             )
         )
         form.addRow(
             QLabel("phase @ 300 THz"),
             self._row(self._phase_end_phase_slider, self._phase_end_phase_spin),
         )
-
-        outer.addWidget(form_widget)
-        self._phase_end_controls_widget = form_widget
-        self._phase_end_controls_widget.setEnabled(True)
 
         self._phase_end_start_slider.valueChanged.connect(
             self._on_phase_end_params_changed
@@ -596,7 +658,6 @@ class MainWindow(QMainWindow):
         self._invalidate_reconstruction(redraw=False)
 
     def _on_phase_end_toggled(self, checked: bool):
-        self._phase_end_btn.setText("Applied" if checked else "Not applied")
         self._ui_state.linear_phase_end = checked
         self._invalidate_reconstruction(redraw=False)
 
@@ -610,11 +671,21 @@ class MainWindow(QMainWindow):
         self._invalidate_reconstruction(redraw=False)
 
     def _make_gaussian_group(
-        self, title: str, which: str, spec: dict, include_center: bool
+        self,
+        title: str,
+        which: str,
+        spec: dict,
+        include_center: bool,
+        *,
+        checkable: bool = False,
+        checked: bool = True,
     ) -> QGroupBox:
         gb = QGroupBox(title)
-        form = QFormLayout(gb)
+        gb.setCheckable(checkable)
+        if checkable:
+            gb.setChecked(checked)
 
+        form = QFormLayout(gb)
         controls: dict[str, tuple[QSlider, QDoubleSpinBox]] = {}
 
         if include_center:
@@ -649,7 +720,11 @@ class MainWindow(QMainWindow):
         self._register_control(which, "amplitude", a_slider, a_spin)
 
         def on_change(_=None):
-            target = getattr(self.model.state, which)
+            if which == "peak2":
+                target = self.model.state.peak2
+                self.model.state.peak2_enabled = gb.isChecked()
+            else:
+                target = getattr(self.model.state, which)
 
             if which == "background":
                 target.center = 0.0
@@ -666,6 +741,12 @@ class MainWindow(QMainWindow):
         for sl, sp in controls.values():
             sl.valueChanged.connect(on_change)
             sp.valueChanged.connect(on_change)
+
+        if checkable:
+            gb.toggled.connect(on_change)
+
+        if which == "peak2":
+            self._peak2_group = gb
 
         return gb
 
@@ -729,12 +810,6 @@ class MainWindow(QMainWindow):
                 "recon",
             )
 
-        if I_rec is not None:
-            self.line_recon.set_visible(True)
-            self.line_recon.set_data(t_ui, I_rec * 1e-3)
-        else:
-            self.line_recon.set_visible(False)
-
         self.canvas.ax_time.set_xlim(t_ui[0], t_ui[-1])
         self.canvas.ax_time.relim()
         self.canvas.ax_time.autoscale_view(scalex=False, scaley=True)
@@ -797,8 +872,11 @@ class MainWindow(QMainWindow):
             )
         )
 
-        for which in ("background", "peak"):
-            p = getattr(self.model.state, which)
+        for which in ("background", "peak", "peak2"):
+            if which == "peak2":
+                p = self.model.state.peak2
+            else:
+                p = getattr(self.model.state, which)
 
             defaults = {
                 "width_fs": p.width * S_TO_T,
@@ -816,6 +894,12 @@ class MainWindow(QMainWindow):
                 slider, spin = pair
                 self._set_slider_spin_value(slider, spin, val)
 
+        if self._peak2_group is not None:
+            with QSignalBlocker(self._peak2_group):
+                self._peak2_group.setChecked(False)
+
+        self.model.state.peak2_enabled = False
+
         # reset reconstruction UI state
         self._ui_state.phase_init_mode = PHASE_INIT_LABELS[PHASE_INIT_DEFAULT_INDEX]
         self._ui_state.linear_phase_end = False
@@ -827,9 +911,9 @@ class MainWindow(QMainWindow):
             with QSignalBlocker(phase_group):
                 phase_group.button(PHASE_INIT_DEFAULT_INDEX).setChecked(True)
 
-        with QSignalBlocker(self._phase_end_btn):
-            self._phase_end_btn.setChecked(False)
-            self._phase_end_btn.setText("Not applied")
+        if self._phase_end_group is not None:
+            with QSignalBlocker(self._phase_end_group):
+                self._phase_end_group.setChecked(False)
 
         self._set_slider_spin_value(
             self._phase_end_start_slider,
@@ -857,7 +941,15 @@ class MainWindow(QMainWindow):
         cap_line.set_visible(False)
         text_obj.set_text(f"{label} FWHM: n/a")
 
-    def _update_fwhm_overlay(self, t_fs, y_plot, bar_line, cap_line, text_obj, label: str):
+    def _update_fwhm_overlay(
+        self,
+        t_fs,
+        y_plot,
+        bar_line,
+        cap_line,
+        text_obj,
+        label: str,
+    ):
         """
         t_fs: time axis in fs
         y_plot: plotted y-data (already in kA here)

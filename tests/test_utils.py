@@ -1,10 +1,12 @@
 import numpy as np
 import pytest
+from numpy.testing import assert_allclose, assert_array_equal
 
 from phase_weaver.core.utils import (
     fwhm_highest_peak,
     safe_real,
-) 
+    smooth_insert,
+)
 
 
 def test_safe_real_returns_float_for_real_input():
@@ -150,3 +152,172 @@ def test_raises_when_no_right_crossing_exists():
 
     with pytest.raises(ValueError, match="No right half-maximum crossing found."):
         fwhm_highest_peak(x, y)
+
+
+def test_raises_for_non_1d_x1():
+    x1 = np.array([[0, 1], [2, 3]])
+    y1 = np.array([0, 1])
+    x2 = np.array([0, 1])
+    y2 = np.array([0, 1])
+
+    with pytest.raises(ValueError, match="x1 and x2 must be 1D"):
+        smooth_insert(x1, y1, x2, y2)
+
+
+def test_raises_for_non_1d_x2():
+    x1 = np.array([0, 1, 2])
+    y1 = np.array([0, 1, 2])
+    x2 = np.array([[0, 1], [2, 3]])
+    y2 = np.array([0, 1])
+
+    with pytest.raises(ValueError, match="x1 and x2 must be 1D"):
+        smooth_insert(x1, y1, x2, y2)
+
+
+def test_raises_for_length_mismatch_x1_y1():
+    x1 = np.array([0, 1, 2])
+    y1 = np.array([0, 1])  # wrong length
+    x2 = np.array([0, 1])
+    y2 = np.array([0, 1])
+
+    with pytest.raises(ValueError, match="x/y lengths must match"):
+        smooth_insert(x1, y1, x2, y2)
+
+
+def test_raises_for_length_mismatch_x2_y2():
+    x1 = np.array([0, 1, 2])
+    y1 = np.array([0, 1, 2])
+    x2 = np.array([0, 1])
+    y2 = np.array([0])  # wrong length
+
+    with pytest.raises(ValueError, match="x/y lengths must match"):
+        smooth_insert(x1, y1, x2, y2)
+
+
+def test_no_overlap_returns_copy_and_preserves_values():
+    x1 = np.array([0, 1, 2, 3, 4], dtype=float)
+    y1 = np.array([10, 20, 30, 40, 50], dtype=float)
+    x2 = np.array([10, 11], dtype=float)
+    y2 = np.array([1, 2], dtype=float)
+
+    y_out = smooth_insert(x1, y1, x2, y2)
+
+    assert_array_equal(y_out, y1)
+    assert y_out is not y1  # function should return a copy
+
+
+def test_full_domain_overlap_blends_everywhere():
+    x1 = np.array([0, 1, 2], dtype=float)
+    y1 = np.array([2, 2, 2], dtype=float)
+    x2 = np.array([0, 1, 2], dtype=float)
+    y2 = np.array([10, 10, 10], dtype=float)
+
+    y_out = smooth_insert(x1, y1, x2, y2, favor=0.75)
+
+    # (1 - 0.75)*2 + 0.75*10 = 8
+    expected = np.array([8, 8, 8], dtype=float)
+    assert_allclose(y_out, expected)
+
+
+def test_beginning_overlap_fades_out_from_y2():
+    x1 = np.array([0, 1, 2, 3, 4], dtype=float)
+    y1 = np.zeros_like(x1)
+    x2 = np.array([0, 1, 2], dtype=float)
+    y2 = np.array([10, 10, 10], dtype=float)
+
+    y_out = smooth_insert(x1, y1, x2, y2, favor=0.8, power=2.0)
+
+    # overlap has n=3 -> t = [0, 0.5, 1]
+    # w = 0.8 * (1 - t^2) = [0.8, 0.6, 0.0]
+    expected = np.array([8.0, 6.0, 0.0, 0.0, 0.0])
+    assert_allclose(y_out, expected)
+
+
+def test_end_overlap_fades_in_to_y2():
+    x1 = np.array([0, 1, 2, 3, 4], dtype=float)
+    y1 = np.zeros_like(x1)
+    x2 = np.array([2, 3, 4], dtype=float)
+    y2 = np.array([10, 10, 10], dtype=float)
+
+    y_out = smooth_insert(x1, y1, x2, y2, favor=0.8, power=2.0)
+
+    # overlap has n=3 -> t = [0, 0.5, 1]
+    # w = 0.8 * t^2 = [0.0, 0.2, 0.8]
+    expected = np.array([0.0, 0.0, 0.0, 2.0, 8.0])
+    assert_allclose(y_out, expected)
+
+
+def test_middle_overlap_fades_in_and_out():
+    x1 = np.array([0, 1, 2, 3, 4, 5, 6], dtype=float)
+    y1 = np.zeros_like(x1)
+    x2 = np.array([1, 2, 3, 4, 5], dtype=float)
+    y2 = np.array([10, 10, 10, 10, 10], dtype=float)
+
+    y_out = smooth_insert(x1, y1, x2, y2, favor=0.8, power=2.0)
+
+    # n=5 -> t = [0, 0.25, 0.5, 0.75, 1]
+    # sin(pi*t)^2 = [0, 0.5, 1, 0.5, 0]
+    # w = 0.8 * that = [0, 0.4, 0.8, 0.4, 0]
+    expected = np.array([0.0, 0.0, 4.0, 8.0, 4.0, 0.0, 0.0])
+    assert_allclose(y_out, expected, atol=1e-12)
+
+
+def test_unsorted_x2_gives_same_result_as_sorted_x2():
+    x1 = np.array([0, 1, 2, 3, 4], dtype=float)
+    y1 = np.zeros_like(x1)
+
+    x2_sorted = np.array([1, 2, 3], dtype=float)
+    y2_sorted = np.array([10, 20, 30], dtype=float)
+
+    x2_unsorted = np.array([3, 1, 2], dtype=float)
+    y2_unsorted = np.array([30, 10, 20], dtype=float)
+
+    out_sorted = smooth_insert(x1, y1, x2_sorted, y2_sorted, favor=1.0)
+    out_unsorted = smooth_insert(x1, y1, x2_unsorted, y2_unsorted, favor=1.0)
+
+    assert_allclose(out_unsorted, out_sorted)
+
+
+def test_interpolates_y2_onto_x1_grid_when_spacing_differs():
+    x1 = np.array([0, 1, 2, 3, 4], dtype=float)
+    y1 = np.zeros_like(x1)
+
+    # different spacing from x1
+    x2 = np.array([0, 2, 4], dtype=float)
+    y2 = np.array([0, 20, 40], dtype=float)
+
+    y_out = smooth_insert(x1, y1, x2, y2, favor=1.0)
+
+    # full overlap + favor=1 => output should be pure interpolated y2 on x1 grid
+    expected = np.array([0, 10, 20, 30, 40], dtype=float)
+    assert_allclose(y_out, expected)
+
+
+def test_favor_zero_leaves_original_signal_unchanged():
+    x1 = np.array([0, 1, 2, 3, 4], dtype=float)
+    y1 = np.array([5, 6, 7, 8, 9], dtype=float)
+    x2 = np.array([1, 2, 3], dtype=float)
+    y2 = np.array([100, 200, 300], dtype=float)
+
+    y_out = smooth_insert(x1, y1, x2, y2, favor=0.0)
+
+    assert_allclose(y_out, y1)
+
+
+def test_inputs_are_not_modified():
+    x1 = np.array([0, 1, 2, 3, 4], dtype=float)
+    y1 = np.array([1, 2, 3, 4, 5], dtype=float)
+    x2 = np.array([1, 2, 3], dtype=float)
+    y2 = np.array([10, 20, 30], dtype=float)
+
+    x1_before = x1.copy()
+    y1_before = y1.copy()
+    x2_before = x2.copy()
+    y2_before = y2.copy()
+
+    _ = smooth_insert(x1, y1, x2, y2)
+
+    assert_array_equal(x1, x1_before)
+    assert_array_equal(y1, y1_before)
+    assert_array_equal(x2, x2_before)
+    assert_array_equal(y2, y2_before)

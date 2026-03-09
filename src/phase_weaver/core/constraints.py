@@ -1,11 +1,10 @@
 # phase_weaver/core/constraints.py
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .utils import trapz_uniform
+from .utils import trapz_uniform, smooth_insert
 
 if TYPE_CHECKING:
     from .base import CurrentProfile, FormFactor, Grid
@@ -112,6 +111,7 @@ class EnforceDCOne(FrequencyConstraint):
     def apply(self, ff: "FormFactor") -> None:
         ff.mag /= np.max([ff.mag[0], self.eps])
 
+
 class ReplacePhaseEndLinear(FrequencyConstraint):
     def __init__(self, grid: "Grid", start_freq: float, alpha: float):
         self.grid = grid
@@ -121,7 +121,7 @@ class ReplacePhaseEndLinear(FrequencyConstraint):
         if self.start_freq < 0:
             raise ValueError("start_freq must be non-negative")
 
-        self._replace_mask = (self.grid.f_pos >= self.start_freq)
+        self._replace_mask = self.grid.f_pos >= self.start_freq
         if not np.any(self._replace_mask):
             raise ValueError("start_freq is above the maximum frequency in the grid")
 
@@ -141,15 +141,17 @@ class ReplacePhaseEndLinearShift(FrequencyConstraint):
         if self.start_freq < 0:
             raise ValueError("start_freq must be non-negative")
 
-        self._replace_mask = (self.grid.f_pos >= self.start_freq)
+        self._replace_mask = self.grid.f_pos >= self.start_freq
         if not np.any(self._replace_mask):
             raise ValueError("start_freq is above the maximum frequency in the grid")
 
         if self.freq_x <= self.start_freq:
             raise ValueError("freq_x must be greater than start_freq")
-        
+
         if self.freq_x > self.grid.f_pos[-1]:
-            raise ValueError("freq_x must be less than or equal to the maximum frequency in the grid")
+            raise ValueError(
+                "freq_x must be less than or equal to the maximum frequency in the grid"
+            )
 
         self._freqs_mask = self.grid.f_pos[self._replace_mask]
         self._start_x = self._freqs_mask[0]
@@ -161,5 +163,62 @@ class ReplacePhaseEndLinearShift(FrequencyConstraint):
         ff.phase[self._replace_mask] = values
 
 
-        
+class ReplacePhaseEndLinearSmooth(FrequencyConstraint):
+    """
+    Smoothly blend in a linear high-frequency phase tail.
 
+    The inserted tail is the line through (0, 0) and (freq_x, freq_y), applied
+    from `start_freq` onward and smoothly merged into the original phase.
+    """
+
+    def __init__(
+        self,
+        grid: "Grid",
+        start_freq: float,
+        freq_x: float,
+        freq_y: float,
+        favor: float = 0.8,
+        power: float = 2.0,
+    ):
+        if not np.isfinite(start_freq) or start_freq < 0:
+            raise ValueError("start_freq must be finite and non-negative")
+        if not np.isfinite(freq_x):
+            raise ValueError("freq_x must be finite")
+        if not np.isfinite(freq_y):
+            raise ValueError("freq_y must be finite")
+        if not np.isfinite(favor) or not (0.0 <= favor <= 1.0):
+            raise ValueError("favor must be in [0, 1]")
+        if not np.isfinite(power) or power <= 0:
+            raise ValueError("power must be positive")
+
+        if freq_x <= start_freq:
+            raise ValueError("freq_x must be greater than start_freq")
+        if freq_x > grid.f_pos[-1]:
+            raise ValueError(
+                "freq_x must be less than or equal to the maximum frequency in the grid"
+            )
+
+        replace_mask = grid.f_pos >= start_freq
+
+        self._grid = grid
+        self.favor = float(favor)
+        self.power = float(power)
+
+        self._x_values = np.asarray(grid.f_pos[replace_mask], dtype=float)
+        slope = float(freq_y) / float(freq_x)
+        self._y_values = slope * self._x_values
+
+    def apply(self, ff: "FormFactor") -> None:
+        if ff.grid is not self._grid and not np.array_equal(
+            ff.grid.f_pos, self._grid.f_pos
+        ):
+            raise ValueError("FormFactor grid does not match constraint grid")
+
+        ff.phase = smooth_insert(
+            x1=ff.grid.f_pos,
+            y1=ff.phase,
+            x2=self._x_values,
+            y2=self._y_values,
+            favor=self.favor,
+            power=self.power,
+        )

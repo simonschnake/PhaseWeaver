@@ -50,7 +50,12 @@ class PhaseInitializer(ABC):
             "mag", None
         )  # allow passing mag if needed, but default to None
         phase = self.initialize_phase(grid, **kwargs)
-        return FormFactor(grid=grid, mag=mag, phase=phase, eps=kwargs.get("eps_mag", np.finfo(float).eps))
+        return FormFactor(
+            grid=grid,
+            mag=mag,
+            phase=phase,
+            eps=kwargs.get("eps_mag", np.finfo(float).eps),
+        )
 
 
 class MagnitudeInitializer(ABC):
@@ -108,7 +113,12 @@ class GaussianInitializer(FormFactorInitializer):
         mag = np.exp(-2 * np.pi**2 * sigma**2 * grid.f_pos**2)
         phase = np.zeros_like(mag)
 
-        return FormFactor(grid=grid, mag=mag, phase=phase, frequency_constraint=ClampMagnitude(eps=1e-6) + EnforceDCOne())
+        return FormFactor(
+            grid=grid,
+            mag=mag,
+            phase=phase,
+            frequency_constraint=ClampMagnitude(eps=1e-6) + EnforceDCOne(),
+        )
 
 
 class ZeroPhase(PhaseInitializer):
@@ -429,9 +439,7 @@ class GSMagnitudeOnly(ReconstructionAlgorithm):
             raise ValueError(f"mag must have shape {expected}, got {mag.shape}")
 
         # Prepare measurement magnitude (clamp + DC normalize etc.) WITHOUT mutating input
-        ff0 = FormFactor(
-            grid=grid, mag=mag.copy(), phase=np.zeros_like(mag)
-        )
+        ff0 = FormFactor(grid=grid, mag=mag.copy(), phase=np.zeros_like(mag))
         self.frequency_constraints.apply(ff0)
         mag_meas = ff0.mag.copy()
 
@@ -477,5 +485,3 @@ class GSMagnitudeOnly(ReconstructionAlgorithm):
         )
 
         return prof, ff
-
-
