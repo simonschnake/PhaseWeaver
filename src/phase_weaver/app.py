@@ -147,7 +147,7 @@ class MainWindow(QMainWindow):
         self._ui_state = ReconUiState(
             phase_init_mode=PHASE_INIT_LABELS[PHASE_INIT_DEFAULT_INDEX],
             linear_phase_end=False,
-            linear_phase_end_start_freq_hz=0.5 * self.model.grid.f_pos[-1],
+            linear_phase_end_start_freq_hz=0.5 * PHASE_END_REF_FREQ_HZ,
             linear_phase_end_phase_at_300_thz=0.0,
         )
 
