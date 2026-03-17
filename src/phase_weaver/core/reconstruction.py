@@ -49,6 +49,8 @@ class PhaseInitializer(ABC):
         mag = kwargs.get(
             "mag", None
         )  # allow passing mag if needed, but default to None
+        if mag is None:
+            raise ValueError("PhaseInitializer requires 'mag' keyword argument")
         phase = self.initialize_phase(grid, **kwargs)
         return FormFactor(
             grid=grid,
@@ -71,6 +73,8 @@ class MagnitudeInitializer(ABC):
         phase = kwargs.get(
             "phase", None
         )  # allow passing phase if needed, but default to None
+        if phase is None:
+            raise ValueError("MagnitudeInitializer requires 'phase' keyword argument")
         return FormFactor(grid=grid, mag=mag, phase=phase)
 
 
@@ -388,7 +392,6 @@ class ReconstructionAlgorithm(ABC):
         self,
         mag: np.ndarray,
         grid: Grid,
-        charge_C: float,
         **kwargs,
     ) -> tuple[Profile, FormFactor]: ...
 
@@ -432,7 +435,10 @@ class GSMagnitudeOnly(ReconstructionAlgorithm):
     eps_mag: float = 1e-30
 
     def run(
-        self, mag: np.ndarray, grid: Grid, charge_C: float
+        self,
+        mag: np.ndarray,
+        grid: Grid,
+        **kwargs,
     ) -> tuple[Profile, FormFactor]:
         expected = (grid.N // 2 + 1,)
         if mag.shape != expected:
@@ -450,7 +456,7 @@ class GSMagnitudeOnly(ReconstructionAlgorithm):
         ff = FormFactor(grid=grid, mag=mag_meas.copy(), phase=phase, eps=self.eps_mag)
 
         # initial time profile + constraints
-        prof = Profile.from_form_factor(ff, transform=self.transform, charge=None)
+        prof = Profile.from_form_factor(ff, transform=self.transform)
         self.time_constraints.apply(prof)
 
         self.stop.reset()
@@ -465,7 +471,7 @@ class GSMagnitudeOnly(ReconstructionAlgorithm):
             self.frequency_constraints.apply(ff)
             post_ff = ff.copy()
 
-            prof = ff.to_profile(transform=self.transform, charge=None)
+            prof = ff.to_profile(transform=self.transform)
             pre_prof = prof.copy()
             self.time_constraints.apply(prof)
             post_prof = prof.copy()
@@ -478,10 +484,5 @@ class GSMagnitudeOnly(ReconstructionAlgorithm):
                 pre_ff=pre_ff,
                 post_ff=post_ff,
             )
-
-        # attach charge at the end (or inside Profile if you prefer)
-        prof.charge = (
-            charge_C  # only if Profile allows mutation; otherwise rebuild with charge
-        )
 
         return prof, ff

@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import numpy as np
 
 
@@ -15,7 +17,18 @@ def safe_real(x: np.ndarray) -> np.ndarray:
     return np.asarray(x, dtype=float)
 
 
-def fwhm_highest_peak(x, y):
+@dataclass(slots=True, frozen=True)
+class FWHMResult:
+    left_half_max: float
+    right_half_max: float
+    half_max_value: float
+
+    @property
+    def fwhm(self) -> float:
+        return self.right_half_max - self.left_half_max
+
+
+def fwhm_highest_peak(x: np.ndarray, y: np.ndarray) -> FWHMResult:
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
 
@@ -43,85 +56,208 @@ def fwhm_highest_peak(x, y):
     # y-values must be increasing for np.interp
     x_right = np.interp(half, [y[i2], y[i1]], [x[i2], x[i1]])
 
-    return x_right - x_left, x_left, x_right, half
+    return FWHMResult(left_half_max=x_left, right_half_max=x_right, half_max_value=half)
 
 
-def smooth_insert(x1, y1, x2, y2, favor=0.8, power=2.0):
+def overlap_weights(
+    x: np.ndarray,
+    transition_width_left: float = 0.0,
+    transition_width_right: float = 0.0,
+    power: float = 2.0,
+) -> np.ndarray:
     """
-    Smoothly inserts (x2, y2) into (x1, y1).
+    Build smooth blend weights on a 1D target interval.
+
+    The returned weights are always in [0, 1]. The function assumes that
+    `x` describes the region where blending may happen.
 
     Parameters
     ----------
-    x1, y1 : 1D arrays
-        Base function.
-    x2, y2 : 1D arrays
-        Function to insert. x2 may have different spacing.
-    favor : float in [0, 1]
-        How much to favor y2 in the overlap.
-        0.5 = equal blend, 0.8 = mostly y2.
-    power : float
-        Controls smoothness shape. >1 gives softer transition.
+    x:
+        1D x-values of the region to weight.
+    transition_width_left:
+        Width of the fade-in region from the left edge of `x`.
+        - 0.0 means no left fade-in (weights start at 1 on the left).
+    transition_width_right:
+        Width of the fade-out region toward the right edge of `x`.
+        - 0.0 means no right fade-out (weights stay at 1 on the right).
+    power:
+        Shape parameter for the ramps. Must be positive.
+        Larger values make the transition softer / flatter near the plateau.
 
     Returns
     -------
-    y_out : 1D array
-        Modified y-values on x1 grid.
+    w:
+        1D weights in [0, 1], same shape as `x`.
+
+    Notes
+    -----
+    Behavior by parameter choice:
+
+    - left=0, right=0:
+        constant ones
+    - left>0, right=0:
+        fade in from the left, then plateau
+    - left=0, right>0:
+        plateau, then fade out to the right
+    - left>0, right>0:
+        fade in, optional plateau, fade out
+
+    If the left and right transition widths overlap, the function still returns
+    a smooth profile without a flat plateau.
     """
-    x1 = np.asarray(x1)
-    y1 = np.asarray(y1)
-    x2 = np.asarray(x2)
-    y2 = np.asarray(y2)
+    x = np.asarray(x, dtype=float)
 
-    if x1.ndim != 1 or x2.ndim != 1:
-        raise ValueError("x1 and x2 must be 1D")
-    if len(x1) != len(y1) or len(x2) != len(y2):
-        raise ValueError("x/y lengths must match")
+    if x.ndim != 1:
+        raise ValueError("x_target must be 1D")
+    if len(x) == 0:
+        return np.empty(0, dtype=float)
+    if not np.all(np.isfinite(x)):
+        raise ValueError("x_target must contain only finite values")
+    if transition_width_left < 0:
+        raise ValueError("transition_width_left must be non-negative")
+    if transition_width_right < 0:
+        raise ValueError("transition_width_right must be non-negative")
+    if not np.isfinite(power) or power <= 0:
+        raise ValueError("power must be positive")
+    if len(x) > 1 and np.any(np.diff(x) < 0):
+        raise ValueError("x_target must be sorted in non-decreasing order")
 
-    # ensure x2 is sorted
-    order = np.argsort(x2)
-    x2 = x2[order]
-    y2 = y2[order]
+    if len(x) == 1:
+        left_active = transition_width_left > 0
+        right_active = transition_width_right > 0
 
-    # overlap region on x1
-    mask = (x1 >= x2[0]) & (x1 <= x2[-1])
-    if not np.any(mask):
-        return y1.copy()  # no overlap
+        if left_active and right_active:
+            return np.array([0.0], dtype=float)
+        if left_active or right_active:
+            return np.array([0.0], dtype=float)
+        return np.array([1.0], dtype=float)
 
-    y_out = y1.copy()
+    x0 = x[0]
+    x1 = x[-1]
 
-    # interpolate y2 onto x1 grid only in overlap
-    x_overlap = x1[mask]
-    y2_interp = np.interp(x_overlap, x2, y2)
+    def smoothstep(t: np.ndarray) -> np.ndarray:
+        t = np.clip(t, 0.0, 1.0)
+        return t * t * (3.0 - 2.0 * t)
 
-    n = len(x_overlap)
-
-    # detect position of overlap: beginning, middle, end, or whole domain
-    at_start = np.isclose(x_overlap[0], x1[0])
-    at_end = np.isclose(x_overlap[-1], x1[-1])
-
-    if at_start and at_end:
-        # x2 covers all of x1 -> just favor y2 everywhere
-        w = np.full(n, favor)
-
-    elif at_start:
-        # x2 covers beginning of x1:
-        # start strongly with y2, fade toward y1 at the right edge
-        t = np.linspace(0, 1, n)
-        w = favor * (1 - t**power)
-
-    elif at_end:
-        # x2 covers end of x1:
-        # fade from y1 into y2
-        t = np.linspace(0, 1, n)
-        w = favor * (t**power)
-
+    # Left ramp: 0 -> 1 over transition_width_left
+    if transition_width_left == 0:
+        w_left = np.ones_like(x)
     else:
-        # x2 is in the middle:
-        # fade in to y2, stay high, then fade out
-        t = np.linspace(0, 1, n)
-        w = np.sin(np.pi * t) ** power  # 0 at edges, 1 in middle
-        w = favor * w
+        t_left = (x - x0) / transition_width_left
+        w_left = smoothstep(t_left) ** power
+        w_left[0] = 0.0
 
-    # blend
-    y_out[mask] = (1 - w) * y1[mask] + w * y2_interp
+    # Right ramp: 1 -> 0 over transition_width_right
+    if transition_width_right == 0:
+        w_right = np.ones_like(x)
+    else:
+        t_right = (x1 - x) / transition_width_right
+        w_right = smoothstep(t_right) ** power
+        w_right[-1] = 0.0
+
+    # Combine both tapers
+    w = np.minimum(w_left, w_right)
+    return np.clip(w, 0.0, 1.0)
+
+
+def smooth_overlap(
+    x_target: np.ndarray,
+    y_target: np.ndarray,
+    x_source: np.ndarray,
+    y_source: np.ndarray,
+    transition_width: float | None = None,
+    power: float = 2.0,
+) -> np.ndarray:
+    """
+    Smoothly blend source data into target data on the target grid.
+
+    The source is interpolated onto the target grid over the overlapping region.
+    Smooth transitions are applied at the overlap boundaries unless the source
+    already contains the corresponding target boundary.
+
+    Parameters
+    ----------
+    x_target, y_target:
+        Target function on the target grid.
+    x_source, y_source:
+        Source function to blend in. `x_source` may have different spacing.
+    transition_width:
+        Width of the transition region in x-units.
+        - If None, uses half of the target span.
+        - If the source contains the left end of the target, no left transition
+          is applied.
+        - If the source contains the right end of the target, no right transition
+          is applied.
+    power:
+        Shape parameter for the taper. Must be positive.
+
+    Returns
+    -------
+    y_out:
+        Smoothed result on the target grid.
+
+    Notes
+    -----
+    This function performs a full replacement in the plateau region.
+    If you later want partial trust in the source, use:
+
+        y_out = (1 - favor * w) * y_target + (favor * w) * y_source_interp
+    """
+    x_target = np.asarray(x_target, dtype=float)
+    y_target = np.asarray(y_target, dtype=float)
+    x_source = np.asarray(x_source, dtype=float)
+    y_source = np.asarray(y_source, dtype=float)
+
+    if x_target.ndim != 1 or x_source.ndim != 1:
+        raise ValueError("x_target and x_source must be 1D")
+    if len(x_target) != len(y_target) or len(x_source) != len(y_source):
+        raise ValueError("x/y lengths must match")
+    if len(x_target) == 0:
+        raise ValueError("x_target and y_target must not be empty")
+    if len(x_source) == 0:
+        raise ValueError("x_source and y_source must not be empty")
+    if not np.all(np.isfinite(x_target)) or not np.all(np.isfinite(y_target)):
+        raise ValueError("x_target and y_target must contain only finite values")
+    if not np.all(np.isfinite(x_source)) or not np.all(np.isfinite(y_source)):
+        raise ValueError("x_source and y_source must contain only finite values")
+    if np.any(np.diff(x_target) < 0):
+        raise ValueError("x_target must be sorted in non-decreasing order")
+    if transition_width is not None and transition_width < 0:
+        raise ValueError("transition_width must be non-negative")
+    if not np.isfinite(power) or power <= 0:
+        raise ValueError("power must be positive")
+
+    # sort source if needed
+    order = np.argsort(x_source)
+    x_source = x_source[order]
+    y_source = y_source[order]
+
+    # overlap of source coverage with target grid
+    overlap = (x_target >= x_source[0]) & (x_target <= x_source[-1])
+    if not np.any(overlap):
+        return y_target.copy()
+
+    x_overlap = x_target[overlap]
+    y_source_interp = np.interp(x_overlap, x_source, y_source)
+
+    if transition_width is None:
+        target_span = x_target[-1] - x_target[0]
+        transition_width = 0.5 * target_span
+
+    left_end_contained = x_source[0] <= x_target[0] <= x_source[-1]
+    right_end_contained = x_source[0] <= x_target[-1] <= x_source[-1]
+
+    transition_width_left = 0.0 if left_end_contained else transition_width
+    transition_width_right = 0.0 if right_end_contained else transition_width
+
+    w = overlap_weights(
+        x=x_overlap,
+        transition_width_left=transition_width_left,
+        transition_width_right=transition_width_right,
+        power=power,
+    )
+
+    y_out = y_target.copy()
+    y_out[overlap] = (1.0 - w) * y_target[overlap] + w * y_source_interp
     return y_out

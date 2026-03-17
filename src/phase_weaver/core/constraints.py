@@ -4,10 +4,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .utils import trapz_uniform, smooth_insert
+from .utils import smooth_overlap, trapz_uniform
 
 if TYPE_CHECKING:
     from .base import CurrentProfile, FormFactor, Grid
+    from .measurement import MeasuredFormFactor
 
 
 class TimeConstraint(ABC):
@@ -118,12 +119,13 @@ class ReplacePhaseEndLinear(FrequencyConstraint):
         self.start_freq = start_freq
         self.alpha = alpha
 
-        if self.start_freq < 0:
-            raise ValueError("start_freq must be non-negative")
+
+        if not np.isfinite(self.start_freq) or self.start_freq < 0:
+            raise ValueError("start_freq must be finite and non-negative")
+        if start_freq > grid.f_pos[-1]:
+            raise ValueError("start_freq is above the maximum frequency in the grid") 
 
         self._replace_mask = self.grid.f_pos >= self.start_freq
-        if not np.any(self._replace_mask):
-            raise ValueError("start_freq is above the maximum frequency in the grid")
 
         self._values = self.alpha * self.grid.f_pos[self._replace_mask]
 
@@ -177,8 +179,8 @@ class ReplacePhaseEndLinearSmooth(FrequencyConstraint):
         start_freq: float,
         freq_x: float,
         freq_y: float,
-        favor: float = 0.8,
         power: float = 2.0,
+        transition_width: float | None = None,
     ):
         if not np.isfinite(start_freq) or start_freq < 0:
             raise ValueError("start_freq must be finite and non-negative")
@@ -186,10 +188,10 @@ class ReplacePhaseEndLinearSmooth(FrequencyConstraint):
             raise ValueError("freq_x must be finite")
         if not np.isfinite(freq_y):
             raise ValueError("freq_y must be finite")
-        if not np.isfinite(favor) or not (0.0 <= favor <= 1.0):
-            raise ValueError("favor must be in [0, 1]")
         if not np.isfinite(power) or power <= 0:
             raise ValueError("power must be positive")
+        if transition_width is not None and (not np.isfinite(transition_width) or transition_width < 0):
+            raise ValueError("transition_width must be finite and non-negative")
 
         if freq_x <= start_freq:
             raise ValueError("freq_x must be greater than start_freq")
@@ -201,8 +203,8 @@ class ReplacePhaseEndLinearSmooth(FrequencyConstraint):
         replace_mask = grid.f_pos >= start_freq
 
         self._grid = grid
-        self.favor = float(favor)
         self.power = float(power)
+        self.transition_width = float(transition_width) if transition_width is not None else None
 
         self._x_values = np.asarray(grid.f_pos[replace_mask], dtype=float)
         slope = float(freq_y) / float(freq_x)
@@ -214,11 +216,52 @@ class ReplacePhaseEndLinearSmooth(FrequencyConstraint):
         ):
             raise ValueError("FormFactor grid does not match constraint grid")
 
-        ff.phase = smooth_insert(
-            x1=ff.grid.f_pos,
-            y1=ff.phase,
-            x2=self._x_values,
-            y2=self._y_values,
-            favor=self.favor,
+        ff.phase = smooth_overlap(
+            x_target=ff.grid.f_pos,
+            y_target=ff.phase,
+            x_source=self._x_values,
+            y_source=self._y_values,
             power=self.power,
+            transition_width=self.transition_width,
         )
+
+
+class BlendMeasuredMagnitude(FrequencyConstraint):
+    """
+    Smoothly blend a measured magnitude into ff.mag.
+
+    Parameters
+    ----------
+    measured:
+        Measured form factor.
+    favor:
+        Blend strength in [0, 1]. Higher means closer to measured data.
+    transition_width:
+        Width of the smooth transition at the overlap boundaries, in frequency
+        units. If None, defaults to 20% of overlap span.
+    """
+
+    def __init__(
+        self,
+        measured: "MeasuredFormFactor",
+        power: float = 2.0,
+        transition_width: float | None = None,
+    ):
+        if not np.isfinite(power) or power <= 0:
+            raise ValueError("power must be positive")
+        if transition_width is not None and (not np.isfinite(transition_width) or transition_width < 0):
+            raise ValueError("transition_width must be finite and non-negative")
+
+        self.measured = measured
+        self.power = float(power)
+        self.transition_width = float(transition_width) if transition_width is not None else None
+
+    def apply(self, ff: "FormFactor") -> None:
+        ff.mag = smooth_overlap(
+                x_target=ff.grid.f_pos,
+                y_target=ff.mag,
+                x_source=self.measured.freq,
+                y_source=self.measured.mag,
+                power=self.power,
+                transition_width=self.transition_width
+            )

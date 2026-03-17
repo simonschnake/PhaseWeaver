@@ -159,6 +159,14 @@ class CurrentProfile(Profile):
             raise ValueError("Charge is not set, cannot compute current.")
         return self.charge * self.values
 
+    @classmethod
+    def from_profile(cls, profile: Profile) -> "CurrentProfile":
+        return cls(
+            grid=profile.grid,
+            values=profile.values,
+            charge=profile.charge,
+        )
+
 
 class FormFactor:
     def __init__(
