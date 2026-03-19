@@ -68,6 +68,15 @@ def set_dark_theme(app: QApplication) -> None:
         QPushButton:pressed {{
             background-color: #1b1b1b;
         }}
+        QPushButton:checked {{
+            background-color: {accent.name()};
+            color: #000000;
+            border: 1px solid {accent.name()};
+            font-weight: 600;
+        }}
+        QPushButton:checked:hover {{
+            background-color: {accent.lighter(110).name()};
+        }}
 
         QDoubleSpinBox, QSpinBox, QLineEdit {{
             background-color: {panel.name()};

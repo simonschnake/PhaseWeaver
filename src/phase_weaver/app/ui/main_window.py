@@ -66,10 +66,9 @@ class MainWindow(QMainWindow):
         self.redraw_reconstruction()
 
     def get_app_state(self) -> AppState:
-        default_state = AppState.default()
         return AppState(
             scenario=self.controls_panel.get_scenario_state(self._base_scenario_state),
-            measurement=default_state.measurement,  # TODO: add measurement controls
+            measurement=self.controls_panel.get_measurement_state(),
             reconstruction=self.controls_panel.get_reconstruction_state(),
         )
 

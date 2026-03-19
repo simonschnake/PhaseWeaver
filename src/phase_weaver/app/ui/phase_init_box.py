@@ -20,7 +20,7 @@ class PhaseInitBox(QGroupBox):
             layout.addWidget(btn)
             self._group.addButton(btn, i)
 
-        self._group.idClicked.connect(lambda _checked: self.changed.emit)
+        self._group.idClicked.connect(lambda _checked: self.changed.emit())
 
     def get_mode(self) -> str:
         idx = self._group.checkedId()

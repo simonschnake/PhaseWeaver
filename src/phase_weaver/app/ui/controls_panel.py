@@ -3,7 +3,7 @@ from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 
 from ..state import ProfileModelState
 
-from ..state import ReconstructionState, AppState
+from ..state import ReconstructionState, AppState, MeasurementState
 from .band_limit_box import BandLimitBox
 from .gaussian_group import GaussianGroup
 from .phase_end_box import PhaseEndBox
@@ -148,3 +148,6 @@ class ControlsPanel(QWidget):
         self.spike_box.set_params(state.peak)
         self.spike2_box.set_enabled_component(state.peak2_enabled)
         self.spike2_box.set_params(state.peak2)
+
+    def get_measurement_state(self) -> MeasurementState:
+        return self.measurement_box.get_state()
