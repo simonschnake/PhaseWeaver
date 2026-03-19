@@ -4,6 +4,7 @@ import numpy as np
 
 from phase_weaver.core.base import CurrentProfile, FormFactor, Profile
 from phase_weaver.core.utils import FWHMResult, fwhm_highest_peak
+import phase_weaver.app.config as cfg
 
 
 @dataclass(slots=True)
@@ -133,8 +134,8 @@ class TimePlotModel:
 class SpectrumPlotModel:
     formfactor_input: FormFactor
     formfactor_recon: FormFactor | None = None
-    f_min: float | None = 0.0
-    f_max: float | None = 333e12
+    f_min: float | None = cfg.DEFAULT_SPECTRUM_FMIN_HZ
+    f_max: float | None = cfg.DEFAULT_SPECTRUM_FMAX_HZ
 
     def update(
         self,

@@ -1,13 +1,16 @@
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 
-from phase_weaver.model.profile_model import ProfileModelState
+from ..state import ProfileModelState
 
-from ..state import ReconstructionState
+from ..state import ReconstructionState, AppState
 from .band_limit_box import BandLimitBox
 from .gaussian_group import GaussianGroup
 from .phase_end_box import PhaseEndBox
 from .phase_init_box import PhaseInitBox
+from .measurement_box import MeasurementBox
+
+import phase_weaver.app.config as cfg
 
 
 class ControlsPanel(QWidget):
@@ -69,16 +72,19 @@ class ControlsPanel(QWidget):
             f_nyq_hz=f_nyq_hz,
         )
 
+        default_state = AppState.default()
+        self.measurement_box = MeasurementBox(default_state.measurement)
+
         for widget in (
             self.background_box,
             self.spike_box,
             self.spike2_box,
             self.phase_end_box,
             self.band_limit_box,
+            self.measurement_box,
+            self.phase_init_box,
         ):
             widget.changed.connect(self.changed.emit)
-
-        self.phase_init_box.changed.connect(lambda _mode: self.changed.emit())
 
         peak_col = QVBoxLayout()
         peak_col.addWidget(self.background_box)
@@ -90,6 +96,7 @@ class ControlsPanel(QWidget):
         recon_col.addWidget(self.phase_init_box)
         recon_col.addWidget(self.phase_end_box)
         recon_col.addWidget(self.band_limit_box)
+        recon_col.addWidget(self.measurement_box)
         recon_col.addStretch(1)
 
         layout = QHBoxLayout(self)
@@ -121,6 +128,7 @@ class ControlsPanel(QWidget):
             linear_phase_end_phase_at_300_thz=phase_at_300_thz,
             band_limit=band_limit_enabled,
             band_limit_f_cut_hz=f_cut_hz,
+            initial_gaussian_sigma_s=cfg.INITIAL_GAUSSIAN_SIGMA_S,
         )
 
     def set_reconstruction_state(self, state: ReconstructionState) -> None:
@@ -140,4 +148,3 @@ class ControlsPanel(QWidget):
         self.spike_box.set_params(state.peak)
         self.spike2_box.set_enabled_component(state.peak2_enabled)
         self.spike2_box.set_params(state.peak2)
-

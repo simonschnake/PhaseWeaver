@@ -13,7 +13,7 @@ from .constraints import (
     NonNegativity,
     NormalizeArea,
     TimeConstraint,
-    TimeConstraints,
+    CombinedTimeConstraint,
 )
 
 
@@ -143,7 +143,7 @@ class CurrentProfile(Profile):
             grid=grid,
             values=values,
             charge=charge,
-            time_constraint=TimeConstraints(NonNegativity(), NormalizeArea()),
+            time_constraint=CombinedTimeConstraint(NonNegativity(), NormalizeArea()),
         )
 
     def copy(self) -> "CurrentProfile":

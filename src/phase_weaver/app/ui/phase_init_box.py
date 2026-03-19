@@ -3,7 +3,7 @@ from PySide6.QtWidgets import QButtonGroup, QGroupBox, QHBoxLayout, QPushButton
 
 
 class PhaseInitBox(QGroupBox):
-    changed = Signal(str)
+    changed = Signal()
 
     def __init__(self, labels: list[str], default: str, parent=None):
         super().__init__("Phase Init", parent)
@@ -20,10 +20,7 @@ class PhaseInitBox(QGroupBox):
             layout.addWidget(btn)
             self._group.addButton(btn, i)
 
-        self._group.idClicked.connect(self._emit_changed)
-
-    def _emit_changed(self, idx: int) -> None:
-        self.changed.emit(self._labels[idx])
+        self._group.idClicked.connect(lambda _checked: self.changed.emit)
 
     def get_mode(self) -> str:
         idx = self._group.checkedId()

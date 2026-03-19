@@ -6,14 +6,14 @@ from phase_weaver.core import FormFactor, Grid, Profile
 from phase_weaver.core.constraints import (
     BlendMeasuredMagnitude,
     FrequencyConstraint,
-    FrequencyConstraints,
+    CombinedFrequencyConstraint,
     NonNegativity,
     NormalizeArea,
     ReplacePhaseEndLinear,
     ReplacePhaseEndLinearShift,
     ReplacePhaseEndLinearSmooth,
     TimeConstraint,
-    TimeConstraints,
+    CombinedTimeConstraint,
 )
 from phase_weaver.core.measurement import MeasuredFormFactor
 from phase_weaver.core.utils import smooth_overlap
@@ -72,12 +72,12 @@ def test_add_time_constraints():
     c1 = NonNegativity()
     c2 = NormalizeArea()
     combined = c1 + c2
-    assert isinstance(combined, TimeConstraints)
+    assert isinstance(combined, CombinedTimeConstraint)
     combined2 = combined + c1  # adding another constraint should work
-    assert isinstance(combined2, TimeConstraints)
+    assert isinstance(combined2, CombinedTimeConstraint)
     assert len(combined2.constraints) == 3
     combined3 = combined + combined2  # adding two TimeConstraints should work
-    assert isinstance(combined3, TimeConstraints)
+    assert isinstance(combined3, CombinedTimeConstraint)
     assert len(combined3.constraints) == 5
     with pytest.raises(NotImplementedError):
         combined + 5
@@ -98,10 +98,10 @@ def test_add_freq_constraints():
         combined + 5
 
     combined2 = combined + c1  # adding another constraint should work
-    assert isinstance(combined2, FrequencyConstraints)
+    assert isinstance(combined2, CombinedFrequencyConstraint)
     assert len(combined2.constraints) == 3
     combined3 = combined + combined2  # adding two FrequencyConstraints should work
-    assert isinstance(combined3, FrequencyConstraints)
+    assert isinstance(combined3, CombinedFrequencyConstraint)
     assert len(combined3.constraints) == 5
 
 
@@ -938,6 +938,7 @@ def test_replace_phase_end_linear_smooth_raises_when_freq_x_above_grid_max():
             freq_y=10.0,
         )
 
+
 def test_replace_phase_end_linear_smooth_raises_for_mismatched_formfactor_grid():
     grid_constraint = Grid.from_df_fmax(df=1, f_max=100, snap_pow2=False)
     grid_other = Grid.from_df_fmax(df=2, f_max=100, snap_pow2=False)
@@ -955,5 +956,8 @@ def test_replace_phase_end_linear_smooth_raises_for_mismatched_formfactor_grid()
         phase=np.zeros(grid_other.N // 2 + 1),
     )
 
-    with pytest.raises(ValueError, match="FormFactor grid does not match constraint grid"):
+    with pytest.raises(
+        ValueError, match="FormFactor grid does not match constraint grid"
+    ):
         constraint.apply(ff)
+

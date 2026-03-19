@@ -3,8 +3,9 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as Navigation
 from matplotlib.figure import Figure
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
+import numpy as np
+
 from phase_weaver.app.plot_model import (
-    PlotModels,
     SpectrumPlotModel,
     TimePlotModel,
 )
@@ -184,12 +185,25 @@ class PlotPanel(QWidget):
             raise ValueError(
                 "Spectrum model is not initialized. Call render_input() first."
             )
-        self.canvas.ax_mag.set_xlim(model.f_min_ui, model.f_max_ui)
+
+        x0 = float(model.f_min_ui)
+        x1 = float(model.f_max_ui)
+
+        if not np.isfinite(x0) or not np.isfinite(x1):
+            x0, x1 = 0.0, 333.0
+        elif x0 == x1:
+            pad = max(abs(x0) * 0.05, 1.0)
+            x0 -= pad
+            x1 += pad
+
+        self.canvas.ax_mag.set_xlim(x0, x1)
+        self.canvas.ax_phase.set_xlim(x0, x1)
+
         self.canvas.ax_mag.relim()
-        self.canvas.ax_phase.set_xlim(model.f_min_ui, model.f_max_ui)
-        self.canvas.ax_phase.relim()
         self.canvas.ax_mag.autoscale_view(scalex=False, scaley=True)
-        self.canvas.ax_phase.autoscale_view(scalex=False, scaley=True)
+
+        self.canvas.ax_phase.relim()
+        self.canvas.ax_phase.autoscale_view(scalex=False, scaley=True) 
 
     def _create_artists(self):
         (self.line_current,) = self.canvas.ax_time.plot(

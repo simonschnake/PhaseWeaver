@@ -1,8 +1,7 @@
-# phase_weaver/core/reconstruction.py
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -21,7 +20,10 @@ from .constraints import (
     NonNegativity,
     NormalizeArea,
     TimeConstraint,
+    BlendMeasuredMagnitude,
 )
+
+from .measurement import MeasuredFormFactor
 
 # =============================================================================
 # Formfactor initialization
@@ -207,8 +209,17 @@ class StopCriterion(ABC):
     """Decide when to stop iterative reconstruction."""
 
     name: str
-    stop: bool = False
-    direct_stop: bool = False
+
+    def __init__(self, *criteria: StopCriterion):
+        self._criteria = criteria or (self,)
+
+    @property
+    def stop(self) -> bool:
+        return False
+
+    @property
+    def direct_stop(self) -> bool:
+        return False
 
     @abstractmethod
     def reset(self) -> None: ...
@@ -216,66 +227,45 @@ class StopCriterion(ABC):
     @abstractmethod
     def update(
         self,
-        last_prof: Profile | None = None,
-        pre_prof: Profile | None = None,
-        post_prof: Profile | None = None,
-        last_ff: FormFactor | None = None,
-        pre_ff: FormFactor | None = None,
-        post_ff: FormFactor | None = None,
+        prof: Profile | None = None,
+        ff: FormFactor | None = None,
     ) -> None: ...
 
-    def __add__(self, other) -> StopCriteria:
-        return StopCriteria(self, other)
+    def __add__(self, other: StopCriterion) -> StopCriterion:
+        return CombinedStopCriterion(*self._criteria, *other._criteria)
 
     def __call__(self) -> bool:
         return self.stop or self.direct_stop
 
 
-class StopCriteria(StopCriterion):
+class CombinedStopCriterion(StopCriterion):
     """
     Combine multiple StopCriterion objects with "any" or "all" logic.
     """
 
     name: str = "combined"
 
-    def __init__(self, *args: StopCriterion) -> None:
-        self.criteria = args
+    def __init__(self, *criterion: StopCriterion) -> None:
+        self._criteria = criterion
 
     def reset(self) -> None:
-        for c in self.criteria:
+        for c in self._criteria:
             c.reset()
 
     def update(
         self,
-        last_prof: Profile | None = None,
-        pre_prof: Profile | None = None,
-        post_prof: Profile | None = None,
-        last_ff: FormFactor | None = None,
-        pre_ff: FormFactor | None = None,
-        post_ff: FormFactor | None = None,
+        prof: Profile | None = None,
+        ff: FormFactor | None = None,
     ) -> None:
-        for c in self.criteria:
+        for c in self._criteria:
             c.update(
-                last_prof=last_prof,
-                pre_prof=pre_prof,
-                post_prof=post_prof,
-                last_ff=last_ff,
-                pre_ff=pre_ff,
-                post_ff=post_ff,
+                prof=prof,
+                ff=ff,
             )
-
-    def __add__(self, other) -> StopCriteria:
-        if not isinstance(other, StopCriterion):
-            raise ValueError(
-                f"Can only combine with another StopCriterion, got {type(other)}"
-            )
-        if isinstance(other, StopCriteria):
-            return StopCriteria(*self.criteria, *other.criteria)
-        return StopCriteria(*self.criteria, other)
 
     def __call__(self) -> bool:
-        all_stop = all(c.stop for c in self.criteria)
-        any_direct_stop = any(c.direct_stop for c in self.criteria)
+        all_stop = all(c.stop for c in self._criteria)
+        any_direct_stop = any(c.direct_stop for c in self._criteria)
         return all_stop or any_direct_stop
 
 
@@ -283,10 +273,10 @@ class StopCriteria(StopCriterion):
 class MinIter(StopCriterion):
     n_iter: int
     name: str = "min_iter"
-    direct_stop: bool = False
 
     def __post_init__(self) -> None:
         self._counter = 0
+        self._criteria = (self,)
 
     def reset(self) -> None:
         self._counter = 0
@@ -297,12 +287,8 @@ class MinIter(StopCriterion):
 
     def update(
         self,
-        last_prof: Profile | None = None,
-        pre_prof: Profile | None = None,
-        post_prof: Profile | None = None,
-        last_ff: FormFactor | None = None,
-        pre_ff: FormFactor | None = None,
-        post_ff: FormFactor | None = None,
+        prof: Profile | None = None,
+        ff: FormFactor | None = None,
     ) -> None:
         self._counter += 1
 
@@ -313,14 +299,11 @@ class MaxIter(StopCriterion):
     name: str = "max_iter"
 
     def __post_init__(self) -> None:
+        self._criteria = (self,)
         self._counter = 0
 
     def reset(self) -> None:
         self._counter = 0
-
-    @property
-    def stop(self) -> bool:
-        return self.direct_stop
 
     @property
     def direct_stop(self) -> bool:
@@ -328,12 +311,8 @@ class MaxIter(StopCriterion):
 
     def update(
         self,
-        last_prof: Profile | None = None,
-        pre_prof: Profile | None = None,
-        post_prof: Profile | None = None,
-        last_ff: FormFactor | None = None,
-        pre_ff: FormFactor | None = None,
-        post_ff: FormFactor | None = None,
+        prof: Profile | None = None,
+        ff: FormFactor | None = None,
     ) -> None:
         self._counter += 1
 
@@ -349,30 +328,79 @@ class PhaseStoppedChanging(StopCriterion):
     name: str = "phase_stopped_changing"
 
     def __post_init__(self) -> None:
+        self._criteria = (self,)
         self.reset()
 
     def reset(self) -> None:
         self._count = 0
         self._mse: float = np.inf
+        self._last_phase: np.ndarray | None = None
 
     @property
     def stop(self) -> bool:
         if self._mse < self.tol:
             self._count += 1
             return self._count >= self.patience
+        self._count = 0
         return False
 
     def update(
         self,
-        last_prof: Profile | None = None,
-        pre_prof: Profile | None = None,
-        post_prof: Profile | None = None,
-        last_ff: FormFactor | None = None,
-        pre_ff: FormFactor | None = None,
-        post_ff: FormFactor | None = None,
+        prof: Profile | None = None,
+        ff: FormFactor | None = None,
     ) -> None:
-        if last_ff is not None and post_ff is not None:
-            self._mse = float(np.mean((post_ff.phase - last_ff.phase)) ** 2)
+
+        if ff is None:
+            return
+
+        phase = ff.phase.copy()
+
+        if self._last_phase is None:
+            self._mse = np.inf
+        else:
+            self._mse = float(np.mean((phase - self._last_phase) ** 2))
+
+        self._last_phase = phase
+
+
+@dataclass(slots=True)
+class MeasurementStoppedChanging(StopCriterion):
+    measured_ff: MeasuredFormFactor
+    tol: float = 1e-6
+    patience: int = 3
+    name: str = "measurement_distance_below"
+
+    def __post_init__(self) -> None:
+        self._criteria = (self,)
+        self.reset()
+
+    def reset(self) -> None:
+        self._count = 0
+        self._err = np.inf
+
+    @property
+    def stop(self) -> bool:
+        if self._err < self.tol:
+            self._count += 1
+            return self._count >= self.patience
+        self._count = 0
+        return False
+
+    def update(
+        self,
+        prof: Profile | None = None,
+        ff: FormFactor | None = None,
+    ) -> None:
+        if ff is None:
+            return
+
+        mag_interp = np.interp(
+            self.measured_ff.freq,
+            ff.grid.f_pos,
+            ff.mag,
+        )
+        denom = max(np.linalg.norm(self.measured_ff.mag), np.finfo(float).eps)
+        self._err = float(np.linalg.norm(mag_interp - self.measured_ff.mag) / denom)
 
 
 # =============================================================================
@@ -388,12 +416,7 @@ class ReconstructionAlgorithm(ABC):
     name: str
 
     @abstractmethod
-    def run(
-        self,
-        mag: np.ndarray,
-        grid: Grid,
-        **kwargs,
-    ) -> tuple[Profile, FormFactor]: ...
+    def run(self, grid: Grid, **kwargs) -> tuple[Profile, FormFactor]: ...
 
 
 # =============================================================================
@@ -436,10 +459,20 @@ class GSMagnitudeOnly(ReconstructionAlgorithm):
 
     def run(
         self,
-        mag: np.ndarray,
         grid: Grid,
         **kwargs,
     ) -> tuple[Profile, FormFactor]:
+        mag = kwargs.get("mag", None)
+        if mag is None or type(mag) is not np.ndarray:
+            raise ValueError(
+                "GSMagnitudeOnly requires 'mag' keyword argument of type np.ndarray"
+            )
+
+        if grid is None or type(grid) is not Grid:
+            raise ValueError(
+                "GSMagnitudeOnly requires 'grid' keyword argument of type Grid"
+            )
+
         expected = (grid.N // 2 + 1,)
         if mag.shape != expected:
             raise ValueError(f"mag must have shape {expected}, got {mag.shape}")
@@ -462,27 +495,93 @@ class GSMagnitudeOnly(ReconstructionAlgorithm):
         self.stop.reset()
 
         while not self.stop():
-            last_prof = prof.copy()
-            last_ff = ff.copy()
-
             ff = prof.to_form_factor(self.transform)
-            pre_ff = ff.copy()
             ff.mag = mag_meas.copy()
             self.frequency_constraints.apply(ff)
-            post_ff = ff.copy()
 
             prof = ff.to_profile(transform=self.transform)
-            pre_prof = prof.copy()
             self.time_constraints.apply(prof)
-            post_prof = prof.copy()
 
-            self.stop.update(
-                last_prof=last_prof,
-                pre_prof=pre_prof,
-                post_prof=post_prof,
-                last_ff=last_ff,
-                pre_ff=pre_ff,
-                post_ff=post_ff,
+            self.stop.update(prof=prof, ff=ff)
+
+        return prof, ff
+
+
+@dataclass(slots=True)
+class GSMeasuredMagnitude(ReconstructionAlgorithm):
+    """
+    GS-style algorithm for partially measured magnitude:
+      1) initialize full-grid form factor from a FormFactorInitializer
+         (default: GaussianInitializer)
+      2) smoothly blend the measured magnitude into that initial form factor
+      3) repeatedly:
+         - inverse transform to time
+         - apply time constraints
+         - forward transform to frequency
+         - smoothly blend measured magnitude into current iterate
+      4) stop when all stop criteria are satisfied
+    """
+
+    measured_ff: MeasuredFormFactor
+    name: str = "gs_measured_magnitude"
+    transform: Transform = field(
+        default_factory=lambda: DCPhysicalRFFT(unwrap_phase=True, dc_normalize=False)
+    )
+    formfactor_init: FormFactorInitializer = field(default_factory=GaussianInitializer)
+    time_constraints: TimeConstraint = field(
+        default_factory=lambda: NonNegativity() + NormalizeArea() + CenterFirstMoment()
+    )
+    frequency_constraints: FrequencyConstraint = field(
+        default_factory=lambda: ClampMagnitude(eps=1e-6) + EnforceDCOne()
+    )
+    stop: StopCriterion = field(
+        default_factory=lambda: (
+            MaxIter(1_000) + PhaseStoppedChanging(tol=1e-8, patience=5) + MinIter(10)
+        )
+    )
+    transition_width: float | None = None
+    overlap_power: float = 2.0
+    initial_sigma: float = 10e-15
+    eps_mag: float = 1e-30
+
+    def __post_init__(self) -> None:
+        self.frequency_constraints = (
+            BlendMeasuredMagnitude(
+                measured=self.measured_ff,
+                power=self.overlap_power,
+                transition_width=self.transition_width,
             )
+            + self.frequency_constraints
+        )
+        self.stop = self.stop + MeasurementStoppedChanging(
+            self.measured_ff, tol=1e-4, patience=3
+        )
+
+    def run(
+        self,
+        grid: Grid,
+        **kwargs,
+    ) -> tuple[Profile, FormFactor]:
+
+        sigma = kwargs.get("sigma", self.initial_sigma)
+
+        # 1) initial full-grid form factor from initializer
+        ff = self.formfactor_init(grid, sigma=sigma)
+        self.frequency_constraints.apply(ff)
+
+        self.stop.reset()
+
+        prof = ff.to_profile(transform=self.transform)
+        self.time_constraints.apply(prof)
+
+        while not self.stop():
+            # back to time domain
+            prof = ff.to_profile(transform=self.transform)
+            self.time_constraints.apply(prof)
+
+            ff = prof.to_form_factor(self.transform)
+            self.frequency_constraints.apply(ff)
+
+            self.stop.update(prof=prof, ff=ff)
 
         return prof, ff

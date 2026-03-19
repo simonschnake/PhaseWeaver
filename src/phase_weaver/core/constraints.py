@@ -1,4 +1,5 @@
 # phase_weaver/core/constraints.py
+from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
@@ -12,66 +13,42 @@ if TYPE_CHECKING:
 
 
 class TimeConstraint(ABC):
+    def __init__(self, *constraints: TimeConstraint):
+        self._constraints = constraints or (self,)
+
     @abstractmethod
-    def apply(self, prof: "CurrentProfile") -> None:
-        raise NotImplementedError
+    def apply(self, prof: "CurrentProfile") -> None: ...
 
-    def __add__(self, other: "TimeConstraint") -> "TimeConstraints":
-        if isinstance(other, TimeConstraint):
-            return TimeConstraints(self, other)
-        raise NotImplementedError(
-            "Can only add TimeConstraint to another TimeConstraint"
-        )
+    def __add__(self, other: TimeConstraint) -> TimeConstraint:
+        return CombinedTimeConstraint(*self._constraints, *other._constraints)
 
 
-class TimeConstraints(TimeConstraint):
-    def __init__(self, *args: TimeConstraint):
-        self.constraints = args
+class CombinedTimeConstraint(TimeConstraint):
+    def __init__(self, *constraints: TimeConstraint):
+        self._constraints = constraints
 
     def apply(self, prof: "CurrentProfile") -> None:
-        for constraint in self.constraints:
+        for constraint in self._constraints:
             constraint.apply(prof)
-
-    def __add__(self, other: "TimeConstraint") -> "TimeConstraints":
-        if isinstance(other, TimeConstraints):
-            return TimeConstraints(*self.constraints, *other.constraints)
-        elif isinstance(other, TimeConstraint):
-            return TimeConstraints(*self.constraints, other)
-        else:
-            raise NotImplementedError(
-                "Can only add TimeConstraint to another TimeConstraint"
-            )
 
 
 class FrequencyConstraint(ABC):
+    def __init__(self, *constraints: FrequencyConstraint):
+        self._constraints = constraints or (self,)
+
     @abstractmethod
-    def apply(self, ff: "FormFactor") -> None:
-        raise NotImplementedError
+    def apply(self, ff: "FormFactor") -> None: ...
 
-    def __add__(self, other: "FrequencyConstraint") -> "FrequencyConstraints":
-        if isinstance(other, FrequencyConstraint):
-            return FrequencyConstraints(self, other)
-        raise NotImplementedError(
-            "Can only add FrequencyConstraint to another FrequencyConstraint"
-        )
+    def __add__(self, other: FrequencyConstraint) -> FrequencyConstraint:
+        return CombinedFrequencyConstraint(*self._constraints, *other._constraints)
 
 
-class FrequencyConstraints(FrequencyConstraint):
-    def __init__(self, *args: FrequencyConstraint):
-        self.constraints = args
-
-    def __add__(self, other: "FrequencyConstraint") -> "FrequencyConstraints":
-        if isinstance(other, FrequencyConstraints):
-            return FrequencyConstraints(*self.constraints, *other.constraints)
-        elif isinstance(other, FrequencyConstraint):
-            return FrequencyConstraints(*self.constraints, other)
-        else:
-            raise NotImplementedError(
-                "Can only add FrequencyConstraint to another FrequencyConstraint"
-            )
+class CombinedFrequencyConstraint(FrequencyConstraint):
+    def __init__(self, *constraints: FrequencyConstraint):
+        self._constraints = constraints
 
     def apply(self, ff: "FormFactor") -> None:
-        for constraint in self.constraints:
+        for constraint in self._constraints:
             constraint.apply(ff)
 
 
@@ -99,6 +76,7 @@ class CenterFirstMoment(TimeConstraint):
 
 class ClampMagnitude(FrequencyConstraint):
     def __init__(self, eps: float = np.finfo(float).eps):
+        super().__init__()
         self.eps = eps
 
     def apply(self, ff: "FormFactor") -> None:
@@ -107,6 +85,7 @@ class ClampMagnitude(FrequencyConstraint):
 
 class EnforceDCOne(FrequencyConstraint):
     def __init__(self, eps: float = np.finfo(float).eps):
+        super().__init__()
         self.eps = eps
 
     def apply(self, ff: "FormFactor") -> None:
@@ -115,15 +94,15 @@ class EnforceDCOne(FrequencyConstraint):
 
 class ReplacePhaseEndLinear(FrequencyConstraint):
     def __init__(self, grid: "Grid", start_freq: float, alpha: float):
+        super().__init__()
         self.grid = grid
         self.start_freq = start_freq
         self.alpha = alpha
 
-
         if not np.isfinite(self.start_freq) or self.start_freq < 0:
             raise ValueError("start_freq must be finite and non-negative")
         if start_freq > grid.f_pos[-1]:
-            raise ValueError("start_freq is above the maximum frequency in the grid") 
+            raise ValueError("start_freq is above the maximum frequency in the grid")
 
         self._replace_mask = self.grid.f_pos >= self.start_freq
 
@@ -135,6 +114,7 @@ class ReplacePhaseEndLinear(FrequencyConstraint):
 
 class ReplacePhaseEndLinearShift(FrequencyConstraint):
     def __init__(self, grid: "Grid", start_freq: float, freq_x: float, freq_y: float):
+        super().__init__()
         self.grid = grid
         self.start_freq = start_freq
         self.freq_x = freq_x
@@ -172,55 +152,50 @@ class ReplacePhaseEndLinearSmooth(FrequencyConstraint):
     The inserted tail is the line through (0, 0) and (freq_x, freq_y), applied
     from `start_freq` onward and smoothly merged into the original phase.
     """
+    def __init__(self, start_freq: float, freq_x: float, freq_y: float, power: float = 2.0, transition_width: float | None = None, *constraints: FrequencyConstraint):
+        super().__init__()
+        self.start_freq = start_freq
+        self.freq_x = freq_x
+        self.freq_y = freq_y
+        self.power = power
+        self.transition_width = transition_width
 
-    def __init__(
-        self,
-        grid: "Grid",
-        start_freq: float,
-        freq_x: float,
-        freq_y: float,
-        power: float = 2.0,
-        transition_width: float | None = None,
-    ):
-        if not np.isfinite(start_freq) or start_freq < 0:
+        if not np.isfinite(self.start_freq) or self.start_freq < 0:
             raise ValueError("start_freq must be finite and non-negative")
-        if not np.isfinite(freq_x):
+        if not np.isfinite(self.freq_x):
             raise ValueError("freq_x must be finite")
-        if not np.isfinite(freq_y):
+        if not np.isfinite(self.freq_y):
             raise ValueError("freq_y must be finite")
-        if not np.isfinite(power) or power <= 0:
+        if not np.isfinite(self.power) or self.power <= 0:
             raise ValueError("power must be positive")
-        if transition_width is not None and (not np.isfinite(transition_width) or transition_width < 0):
+        if self.transition_width is not None and (
+            not np.isfinite(self.transition_width) or self.transition_width < 0
+        ):
             raise ValueError("transition_width must be finite and non-negative")
 
-        if freq_x <= start_freq:
+        if self.freq_x <= self.start_freq:
             raise ValueError("freq_x must be greater than start_freq")
-        if freq_x > grid.f_pos[-1]:
+
+        self.slope = self.freq_y / self.freq_x
+
+    def apply(self, ff: "FormFactor") -> None:
+        f_pos = ff.grid.f_pos
+
+        if self.freq_x > f_pos[-1]:
             raise ValueError(
                 "freq_x must be less than or equal to the maximum frequency in the grid"
             )
 
-        replace_mask = grid.f_pos >= start_freq
+        replace_mask = f_pos >= self.start_freq
 
-        self._grid = grid
-        self.power = float(power)
-        self.transition_width = float(transition_width) if transition_width is not None else None
-
-        self._x_values = np.asarray(grid.f_pos[replace_mask], dtype=float)
-        slope = float(freq_y) / float(freq_x)
-        self._y_values = slope * self._x_values
-
-    def apply(self, ff: "FormFactor") -> None:
-        if ff.grid is not self._grid and not np.array_equal(
-            ff.grid.f_pos, self._grid.f_pos
-        ):
-            raise ValueError("FormFactor grid does not match constraint grid")
+        f_mask = np.asarray(f_pos[replace_mask], dtype=float)
+        lin_phase = self.slope * f_mask
 
         ff.phase = smooth_overlap(
-            x_target=ff.grid.f_pos,
+            x_target=f_pos,
             y_target=ff.phase,
-            x_source=self._x_values,
-            y_source=self._y_values,
+            x_source=f_mask,
+            y_source=lin_phase,
             power=self.power,
             transition_width=self.transition_width,
         )
@@ -243,25 +218,31 @@ class BlendMeasuredMagnitude(FrequencyConstraint):
 
     def __init__(
         self,
-        measured: "MeasuredFormFactor",
+        measured: MeasuredFormFactor,
         power: float = 2.0,
         transition_width: float | None = None,
     ):
+        super().__init__()
         if not np.isfinite(power) or power <= 0:
             raise ValueError("power must be positive")
-        if transition_width is not None and (not np.isfinite(transition_width) or transition_width < 0):
+        if transition_width is not None and (
+            not np.isfinite(transition_width) or transition_width < 0
+        ):
             raise ValueError("transition_width must be finite and non-negative")
 
         self.measured = measured
         self.power = float(power)
-        self.transition_width = float(transition_width) if transition_width is not None else None
+        self.transition_width = (
+            float(transition_width) if transition_width is not None else None
+        )
 
     def apply(self, ff: "FormFactor") -> None:
         ff.mag = smooth_overlap(
-                x_target=ff.grid.f_pos,
-                y_target=ff.mag,
-                x_source=self.measured.freq,
-                y_source=self.measured.mag,
-                power=self.power,
-                transition_width=self.transition_width
-            )
+            x_target=ff.grid.f_pos,
+            y_target=ff.mag,
+            x_source=self.measured.freq,
+            y_source=self.measured.mag,
+            power=self.power,
+            transition_width=self.transition_width,
+        )
+

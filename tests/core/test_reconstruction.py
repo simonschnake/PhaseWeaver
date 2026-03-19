@@ -9,7 +9,7 @@ from phase_weaver.core.base import DCPhysicalRFFT, FormFactor, Grid, Profile
 from phase_weaver.core.constraints import (
     ClampMagnitude,
     EnforceDCOne,
-    FrequencyConstraints,
+    CombinedFrequencyConstraint,
 )
 from phase_weaver.core.reconstruction import (
     GSMagnitudeOnly,
@@ -21,7 +21,7 @@ from phase_weaver.core.reconstruction import (
     PhaseStoppedChanging,
     PredefinedPhase,
     RandomPhase,
-    StopCriteria,
+    CombinedStopCriterion,
     ZeroPhase,
 )
 from phase_weaver.core.utils import trapz_uniform
@@ -45,7 +45,7 @@ def measured_mag(grid: Grid, gaussian_density: np.ndarray) -> np.ndarray:
 def _processed_meas_mag(grid: Grid, mag: np.ndarray, eps: float = 1e-30) -> np.ndarray:
     """Apply the same frequency constraints as GSMagnitudeOnly uses."""
     ff0 = FormFactor(grid=grid, mag=mag.copy(), phase=np.zeros_like(mag), eps=eps)
-    FrequencyConstraints(ClampMagnitude(eps=1e-6), EnforceDCOne()).apply(ff0)
+    CombinedFrequencyConstraint(ClampMagnitude(eps=1e-6), EnforceDCOne()).apply(ff0)
     return ff0.mag.copy()
 
 
@@ -61,8 +61,6 @@ def test_zero_phase_initializer_shape(grid: Grid):
     assert_allclose(ff.phase, 0.0)
 
 
-
-
 def test_random_phase_initializer_deterministic(grid: Grid):
     init1 = RandomPhase().initialize_phase(grid, eps_mag=1e-30, seed=42)
     init2 = RandomPhase().initialize_phase(grid, eps_mag=1e-30, seed=42)
@@ -74,7 +72,8 @@ def test_minimum_phase_initializer_shape_mismatch_raises(grid: Grid):
     mag_bad = np.ones(grid.N // 2)  # wrong length
     with pytest.raises(ValueError):
         MinimumPhaseCepstrum().initialize_phase(grid, mag=mag_bad)
-    
+
+
 def test_minimum_phase_initializer_mag_not_defined_raises(grid: Grid):
     with pytest.raises(ValueError):
         MinimumPhaseCepstrum().initialize_phase(grid, mag=None)
@@ -133,22 +132,30 @@ def test_phase_stopped_changing_patience(
 
     s = PhaseStoppedChanging(tol=1e-12, patience=2)
     s.reset()
-    s.update(last_ff=None, post_ff=ff) # first update, last_ff is None, should not stop
+    s.update(last_ff=None, post_ff=ff)  # first update, last_ff is None, should not stop
     assert s.stop is False
-    s.update(last_ff=ff, post_ff=ff)  # identical phase, mse = 0, but should not stop yet due to patience
+    s.update(
+        last_ff=ff, post_ff=ff
+    )  # identical phase, mse = 0, but should not stop yet due to patience
     assert s.stop is False
-    s.update(last_ff=ff, post_ff=ff)  # identical phase again, mse = 0, should now stop due to patience
+    s.update(
+        last_ff=ff, post_ff=ff
+    )  # identical phase again, mse = 0, should now stop due to patience
     assert s.stop is True
+
 
 def test_magnitude_initializer(grid: Grid):
     class DummyMagInit(MagnitudeInitializer):
         name = "dummy"
+
         def initialize_magnitude(self, grid: Grid) -> np.ndarray:
             return np.ones_like(grid.f_pos)
+
     mag_init = DummyMagInit()
     ff = mag_init(grid)
     assert ff.grid.N == grid.N
     assert ff.mag.shape == (grid.N // 2 + 1,)
+
 
 def test_gaussian_initializer(grid: Grid):
     mag_init = GaussianInitializer()
@@ -272,16 +279,17 @@ def test_merge_stop_criteria():
     c3 = MaxIter(5)
     stop1 = c1 + c2
     stop2 = c2 + c3
-    assert isinstance(stop1, StopCriteria)
-    assert isinstance(stop2, StopCriteria)
+    assert isinstance(stop1, CombinedStopCriterion)
+    assert isinstance(stop2, CombinedStopCriterion)
     assert len(stop1.criteria) == 2
     assert len(stop2.criteria) == 2
     stop3 = stop1 + c3
-    assert isinstance(stop3, StopCriteria)
+    assert isinstance(stop3, CombinedStopCriterion)
     assert len(stop3.criteria) == 3
     stop4 = stop1 + stop2
-    assert isinstance(stop4, StopCriteria)
+    assert isinstance(stop4, CombinedStopCriterion)
     assert len(stop4.criteria) == 4
 
     with pytest.raises(ValueError):
         stop1 + "not a criterion"
+
