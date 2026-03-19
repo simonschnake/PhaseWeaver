@@ -123,7 +123,7 @@ class GaussianInitializer(FormFactorInitializer):
             grid=grid,
             mag=mag,
             phase=phase,
-            frequency_constraint=ClampMagnitude(eps=1e-6) + EnforceDCOne(),
+            frequency_constraint=ClampMagnitude() + EnforceDCOne(),
         )
 
 

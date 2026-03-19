@@ -141,7 +141,7 @@ class AppLogic:
         self,
         app_state: AppState,
     ) -> FrequencyConstraint:
-        constraints = ClampMagnitude(eps=1e-6) + EnforceDCOne()
+        constraints = ClampMagnitude() + EnforceDCOne()
 
         if app_state.reconstruction.linear_phase_end:
             constraints = constraints + ReplacePhaseEndLinearSmooth(
