@@ -261,3 +261,101 @@ def smooth_overlap(
     y_out = y_target.copy()
     y_out[overlap] = (1.0 - w) * y_target[overlap] + w * y_source_interp
     return y_out
+
+
+def exponential_extend(
+    x_target: np.ndarray, x_source: np.ndarray, y_source: np.ndarray, power: float = 2.0
+) -> np.ndarray:
+    """
+    Exponentially extend y_source outside the interval covered by x_source.
+
+    Inside the source interval, values are linearly interpolated.
+    Left and right tails are fitted independently from weighted least-squares
+    fits of log(|y|) = a + k x, using weights that emphasize the nearest edge.
+
+    Parameters
+    ----------
+    x_target : np.ndarray
+        Target x coordinates where the extended signal should be evaluated.
+    x_source : np.ndarray
+        Source x coordinates, assumed to span [x1, x2].
+    y_source : np.ndarray
+        Source y values corresponding to x_source.
+    power : float, default=2.0
+        Exponent applied to the linear weight ramp. Larger values emphasize
+        the edges more strongly.
+
+    Returns
+    -------
+    np.ndarray
+        Extended/interpolated y values at x_target.
+
+    Notes
+    -----
+    - For x < x_source[0], uses a left exponential tail anchored at x_source[0].
+    - For x > x_source[-1], uses a right exponential tail anchored at x_source[-1].
+    - For x inside [x_source[0], x_source[-1]], uses np.interp.
+    - The exponential rates are forced to decay outward.
+    - The fit is based on log(|y|), so sign changes in the source are not modeled
+      in the exponent itself; the tail inherits the boundary sign/value.
+    """
+    x_target = np.asarray(x_target, dtype=float)
+    x_source = np.asarray(x_source, dtype=float)
+    y_source = np.asarray(y_source, dtype=float)
+
+    if x_source.ndim != 1 or y_source.ndim != 1 or x_target.ndim != 1:
+        raise ValueError("x_target, x_source, and y_source must be 1D arrays.")
+    if len(x_source) != len(y_source):
+        raise ValueError("x_source and y_source must have the same length.")
+    if len(x_source) < 3:
+        raise ValueError("Need at least 3 source points.")
+    if not np.all(np.isfinite(x_source)) or not np.all(np.isfinite(y_source)):
+        raise ValueError("x_source and y_source must contain only finite values.")
+    if not np.all(np.diff(x_source) > 0):
+        raise ValueError("x_source must be strictly increasing.")
+    if power <= 0:
+        raise ValueError("power must be positive.")
+
+    eps = 1e-12
+    n = len(x_source)
+
+    def estimate_rate(side: str) -> float:
+        if side == "left":
+            w = np.linspace(100.0, 1.0, n) ** power
+        elif side == "right":
+            w = np.linspace(1.0, 100.0, n) ** power
+        else:
+            raise ValueError("side must be 'left' or 'right'")
+
+        mask = np.abs(y_source) > eps
+        xx = x_source[mask]
+        yy = y_source[mask]
+        ww = w[mask]
+
+        if len(xx) < 3:
+            return 0.0
+
+        # weighted fit: log(|y|) = a + k x
+        k, _ = np.polyfit(xx, np.log(np.abs(yy)), 1, w=ww)
+        return float(k)
+
+    x1 = x_source[0]
+    x2 = x_source[-1]
+    y1 = y_source[0]
+    y2 = y_source[-1]
+
+    k_left = abs(estimate_rate("left"))
+    k_right = -abs(estimate_rate("right"))
+
+    y_target = np.interp(x_target, x_source, y_source)
+
+    left_mask = x_target < x1
+    right_mask = x_target > x2
+
+    if np.any(left_mask):
+        y_target[left_mask] = y1 * np.exp(k_left * (x_target[left_mask] - x1))
+
+    if np.any(right_mask):
+        y_target[right_mask] = y2 * np.exp(k_right * (x_target[right_mask] - x2))
+
+    return y_target

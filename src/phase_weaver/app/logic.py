@@ -18,6 +18,7 @@ from phase_weaver.core.constraints import (
     NonNegativity,
     NormalizeArea,
     ReplacePhaseEndLinearSmooth,
+    CutAfterNthZeroFromPeak,
 )
 from phase_weaver.core.measurement import MeasuredFormFactor
 from phase_weaver.core.reconstruction import (
@@ -40,7 +41,10 @@ class AppLogic:
         self.center_prof = CenterFirstMoment()
 
         self._recon_time_constraints = (
-            NonNegativity() + NormalizeArea() + CenterFirstMoment()
+            CutAfterNthZeroFromPeak()
+            + NonNegativity()
+            + NormalizeArea()
+            + CenterFirstMoment()
         )
         self._recon_stop_condition = (
             MaxIter(1_000) + PhaseStoppedChanging(tol=1e-8, patience=5) + MinIter(10)

@@ -28,17 +28,7 @@ from .measurement import MeasuredFormFactor
 # =============================================================================
 # Formfactor initialization
 # =============================================================================
-
-
-class FormFactorInitializer(ABC):
-    """Given a Grid, return an initial FormFactor with mag+phase for bins [0..Nyquist]."""
-
-    name: str
-
-    @abstractmethod
-    def __call__(self, grid: Grid, **kwargs) -> FormFactor: ...
-
-
+#
 class PhaseInitializer(ABC):
     """Given a Grid, return an initial phase"""
 
@@ -47,21 +37,6 @@ class PhaseInitializer(ABC):
     @abstractmethod
     def initialize_phase(self, grid: Grid, **kwargs) -> np.ndarray: ...
 
-    def __call__(self, grid: Grid, **kwargs) -> FormFactor:
-        mag = kwargs.get(
-            "mag", None
-        )  # allow passing mag if needed, but default to None
-        if mag is None:
-            raise ValueError("PhaseInitializer requires 'mag' keyword argument")
-        phase = self.initialize_phase(grid, **kwargs)
-        return FormFactor(
-            grid=grid,
-            mag=mag,
-            phase=phase,
-            eps=kwargs.get("eps_mag", np.finfo(float).eps),
-        )
-
-
 class MagnitudeInitializer(ABC):
     """Given a Grid, return an initial magnitude"""
 
@@ -69,63 +44,6 @@ class MagnitudeInitializer(ABC):
 
     @abstractmethod
     def initialize_magnitude(self, grid: Grid, **kwargs) -> np.ndarray: ...
-
-    def __call__(self, grid: Grid, **kwargs) -> FormFactor:
-        mag = self.initialize_magnitude(grid, **kwargs)
-        phase = kwargs.get(
-            "phase", None
-        )  # allow passing phase if needed, but default to None
-        if phase is None:
-            raise ValueError("MagnitudeInitializer requires 'phase' keyword argument")
-        return FormFactor(grid=grid, mag=mag, phase=phase)
-
-
-class GaussianInitializer(FormFactorInitializer):
-    """
-    Return the FormFactor corresponding to a Gaussian profile in time.
-
-    The time-domain function is
-
-        g(t) = (1 / (sigma * sqrt(2*pi))) * exp(-t**2 / (2*sigma**2))
-
-    where:
-        - t is time in seconds
-        - sigma is the standard deviation in time
-
-    Using the Fourier transform convention
-
-        g_hat(f) = integral from -inf to inf of g(t) * exp(-i*2*pi*f*t) dt
-
-    with f in Hz, the Fourier transform is
-
-        g_hat(f) = exp(-2*pi**2 * sigma**2 * f**2)
-
-    So a normalized zero-mean Gaussian in time remains a Gaussian in frequency.
-    """
-
-    name: str = "gaussian"
-
-    def __call__(self, grid: Grid, **kwargs) -> FormFactor:
-        try:
-            sigma = kwargs["sigma"]
-        except KeyError:
-            raise KeyError(
-                "GaussianInitializer requires 'sigma' keyword argument (in seconds)"
-            )
-
-        if sigma <= 0:
-            raise ValueError(f"sigma must be positive, got {sigma}")
-
-        mag = np.exp(-2 * np.pi**2 * sigma**2 * grid.f_pos**2)
-        phase = np.zeros_like(mag)
-
-        return FormFactor(
-            grid=grid,
-            mag=mag,
-            phase=phase,
-            frequency_constraint=ClampMagnitude() + EnforceDCOne(),
-        )
-
 
 class ZeroPhase(PhaseInitializer):
     name: str = "zero_phase"
@@ -187,7 +105,7 @@ class PredefinedPhase(PhaseInitializer):
     Use a predefined phase array, ignoring the input magnitude.
     """
 
-    def __init__(self, phase: np.ndarray):
+    def __init__(self, phase: np.ndarray, **kwargs):
         self.phase = np.asarray(phase, dtype=float)
         self.name = "predefined"
 
@@ -198,6 +116,75 @@ class PredefinedPhase(PhaseInitializer):
                 f"predefined phase must have shape {expected}, got {self.phase.shape}"
             )
         return np.unwrap(self.phase)
+
+class FormFactorInitializer(ABC):
+    """Given a Grid, return an initial FormFactor with mag+phase for bins [0..Nyquist]."""
+
+    mag_init: MagnitudeInitializer = field(default_factory=ExponentialInitializer)
+    phase_init: PhaseInitializer = field(default_factory=ZeroPhase)
+
+
+    def __call__(self, grid: Grid, **kwargs) -> FormFactor:
+        mag = self.mag_init.initialize_magnitude(grid, **kwargs)
+        phase = self.phase_init.initialize_phase(grid, mag=mag, **kwargs)
+
+        return FormFactor(
+            grid=grid,
+            mag=mag,
+            phase=phase,
+            eps=kwargs.get("eps", np.finfo(float).eps),
+        )
+
+
+
+
+class GaussianInitializer(FormFactorInitializer):
+    """
+    Return the FormFactor corresponding to a Gaussian profile in time.
+
+    The time-domain function is
+
+        g(t) = (1 / (sigma * sqrt(2*pi))) * exp(-t**2 / (2*sigma**2))
+
+    where:
+        - t is time in seconds
+        - sigma is the standard deviation in time
+
+    Using the Fourier transform convention
+
+        g_hat(f) = integral from -inf to inf of g(t) * exp(-i*2*pi*f*t) dt
+
+    with f in Hz, the Fourier transform is
+
+        g_hat(f) = exp(-2*pi**2 * sigma**2 * f**2)
+
+    So a normalized zero-mean Gaussian in time remains a Gaussian in frequency.
+    """
+
+    name: str = "gaussian"
+
+    def __call__(self, grid: Grid, **kwargs) -> FormFactor:
+        try:
+            sigma = kwargs["sigma"]
+        except KeyError:
+            raise KeyError(
+                "GaussianInitializer requires 'sigma' keyword argument (in seconds)"
+            )
+
+        if sigma <= 0:
+            raise ValueError(f"sigma must be positive, got {sigma}")
+
+        mag = np.exp(-2 * np.pi**2 * sigma**2 * grid.f_pos**2)
+        phase = np.zeros_like(mag)
+
+        return FormFactor(
+            grid=grid,
+            mag=mag,
+            phase=phase,
+            frequency_constraint=ClampMagnitude() + EnforceDCOne(),
+        )
+
+
 
 
 # =============================================================================
@@ -527,6 +514,8 @@ class GSMeasuredMagnitude(ReconstructionAlgorithm):
     transform: Transform = field(
         default_factory=lambda: DCPhysicalRFFT(unwrap_phase=True, dc_normalize=False)
     )
+    magnitude_init: MagnitudeInitializer = field(default_factory=ExponentialInitializer)
+    phase_init: PhaseInitializer = field(default_factory=)
     formfactor_init: FormFactorInitializer = field(default_factory=GaussianInitializer)
     time_constraints: TimeConstraint = field(
         default_factory=lambda: NonNegativity() + NormalizeArea() + CenterFirstMoment()

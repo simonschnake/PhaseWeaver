@@ -9,8 +9,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .control_box import ControlBox
 from ..state import MeasurementState
+
+# assumes these already exist
+from .control_box import ControlBox
 
 
 class MeasurementBox(ControlBox):
@@ -22,28 +24,31 @@ class MeasurementBox(ControlBox):
         super().__init__(
             title="Measurement",
             specs={
-                "f_min": (
+                "f_min_hz": (
                     0.0,
-                    500,
-                    0.1,
-                    0.1,
+                    10_000.0,
+                    0.001,
+                    initial.f_min_hz / 1e12,
                 ),
-                "f_max": (
+                "f_max_hz": (
                     0.0,
-                    500,
-                    0.1,
-                    250,
+                    10_000.0,
+                    0.001,
+                    initial.f_max_hz / 1e12,
                 ),
-                "overlap_width": (
+                "overlap_width_hz": (
                     0.0,
-                    150,
-                    0.1,
-                    50,
+                    10_000.0,
+                    0.001,
+                    initial.overlap_width_hz / 1e12,
                 ),
             },
             checkable=False,  # important: do NOT disable the whole box
             parent=parent,
         )
+
+        self.enable_cb = QCheckBox("Use limited measurement range")
+        self.enable_cb.setChecked(initial.enabled)
 
         self._mode_group = QButtonGroup(self)
         self._mode_group.setExclusive(True)
@@ -62,16 +67,18 @@ class MeasurementBox(ControlBox):
             self._mode_group.addButton(btn, i)
             self._mode_buttons[mode] = btn
 
-        self.form.insertRow(0, "Mode", mode_row)
+        self.form.insertRow(0, self.enable_cb)
+        self.form.insertRow(1, "Mode", mode_row)
 
-        self._f_min_slider, self._f_min_spin = self._controls["f_min"]
-        self._f_max_slider, self._f_max_spin = self._controls["f_max"]
-        self._overlap_slider, self._overlap_spin = self._controls["overlap_width"]
+        self._f_min_slider, self._f_min_spin = self._controls["f_min_hz"]
+        self._f_max_slider, self._f_max_spin = self._controls["f_max_hz"]
+        self._overlap_slider, self._overlap_spin = self._controls["overlap_width_hz"]
 
         self._f_min_spin.setSuffix(" THz")
         self._f_max_spin.setSuffix(" THz")
         self._overlap_spin.setSuffix(" THz")
 
+        self.enable_cb.toggled.connect(self._on_enabled_changed)
         self._mode_group.idClicked.connect(lambda _id: self._on_mode_changed())
 
         self._on_enabled_changed()
@@ -87,7 +94,15 @@ class MeasurementBox(ControlBox):
         spin.setEnabled(enabled)
 
     def _on_enabled_changed(self, *_args) -> None:
+        enabled = self.enable_cb.isChecked()
         mode = self._selected_mode()
+
+        if not enabled:
+            self._set_pair_enabled(self._f_min_slider, self._f_min_spin, False)
+            self._set_pair_enabled(self._f_max_slider, self._f_max_spin, False)
+            self._set_pair_enabled(self._overlap_slider, self._overlap_spin, False)
+            self.changed.emit()
+            return
 
         is_full = mode == "full"
         is_below_cut = mode == "below_cut"
@@ -122,7 +137,7 @@ class MeasurementBox(ControlBox):
             f_max_hz = f_min_hz
 
         return MeasurementState(
-            enabled=self.get_mode() != "full",
+            enabled=self.enable_cb.isChecked(),
             mode=self.get_mode(),
             f_min_hz=f_min_hz,
             f_max_hz=f_max_hz,

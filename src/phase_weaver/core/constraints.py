@@ -152,7 +152,16 @@ class ReplacePhaseEndLinearSmooth(FrequencyConstraint):
     The inserted tail is the line through (0, 0) and (freq_x, freq_y), applied
     from `start_freq` onward and smoothly merged into the original phase.
     """
-    def __init__(self, start_freq: float, freq_x: float, freq_y: float, power: float = 2.0, transition_width: float | None = None, *constraints: FrequencyConstraint):
+
+    def __init__(
+        self,
+        start_freq: float,
+        freq_x: float,
+        freq_y: float,
+        power: float = 2.0,
+        transition_width: float | None = None,
+        *constraints: FrequencyConstraint,
+    ):
         super().__init__()
         self.start_freq = start_freq
         self.freq_x = freq_x
@@ -246,3 +255,51 @@ class BlendMeasuredMagnitude(FrequencyConstraint):
             transition_width=self.transition_width,
         )
 
+
+class CutAfterNthZeroFromPeak(TimeConstraint):
+    def __init__(
+        self, n: int = 10, threshold: float = 0.0, keep_crossing: bool = False
+    ):
+        super().__init__()
+
+        if not isinstance(n, int) or n < 1:
+            raise ValueError("n must be a positive integer")
+        if not np.isfinite(threshold):
+            raise ValueError("threshold must be finite")
+
+        self.n = n
+        self.threshold = threshold
+        self.keep_crossing = keep_crossing
+
+    def apply(self, prof: "CurrentProfile") -> None:
+        x = np.asarray(prof.values, dtype=float)
+
+        if x.ndim != 1:
+            raise ValueError("CutAfterNthZeroFromPeak only supports 1D profiles")
+        if x.size == 0:
+            return
+
+        imax = int(np.argmax(x))
+        y = x.copy()
+
+        # Links vom Maximum:
+        # Alle Indizes mit x <= threshold, dann die n-te von innen nach außen.
+        left_hits = np.where(x[:imax] <= self.threshold)[0]
+        if left_hits.size >= self.n:
+            left_cut = int(left_hits[-self.n])
+            if self.keep_crossing:
+                y[:left_cut] = 0.0
+            else:
+                y[: left_cut + 1] = 0.0
+
+        # Rechts vom Maximum:
+        # Alle Indizes mit x <= threshold, dann die n-te nach außen.
+        right_hits = np.where(x[imax + 1 :] <= self.threshold)[0]
+        if right_hits.size >= self.n:
+            right_cut = int(imax + 1 + right_hits[self.n - 1])
+            if self.keep_crossing:
+                y[right_cut + 1 :] = 0.0
+            else:
+                y[right_cut:] = 0.0
+
+        prof.values = y
