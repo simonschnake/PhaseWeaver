@@ -12,10 +12,11 @@ DT = 1e-16
 T_MAX = 1e-13
 CHARGE_C = 250e-12  # 250 pC
 
+MAG_INIT_MODES = ["exp", "real", "measext", "CRISP"]
+MAG_INIT_DEFAULT = "exp"
 
-PHASE_INIT_MODES = ["zero", "real", "minphase", "last"]
-PHASE_INIT_MODES_T = Literal["zero", "real", "minphase", "last"]
-PHASE_INIT_DEFAULT = "minphase"
+PHASE_INIT_MODES = ["zero", "real", "minphase", "last", "CRISP"]
+PHASE_INIT_DEFAULT = "zero"
 
 SPIKE_SPEC = {
     "center_fs": (-20.0, 20.0, 1.0, -10.0),
@@ -52,13 +53,14 @@ DEFAULT_SPECTRUM_FMAX_HZ = 333e12
 # Measurement parameters
 
 MEASUREMENT_MODES = ["full", "below_cut", "between"]
-MEASUREMENT_MODES_T = Literal["full", "below_cut", "between"]
-
 MEASUREMENT_ENABLED = False
 MEASUREMENT_MODE_DEFAULT = "full"
+MEASUREMENT_RANGE_MIN_THZ = 0.0
+MEASUREMENT_RANGE_MAX_THZ = 400.0
+MEASUREMENT_RANGE_STEP_THZ = 0.1
+MEASUREMENT_F_MIN_DEFAULT_THZ = 50.0
+MEASUREMENT_F_MAX_DEFAULT_THZ = 250.0
+MEASUREMENT_OVERLAP_WIDTH_DEFAULT_THZ = 30.0
 
-MEASUREMENT_F_MIN_HZ = 50e12
-MEASUREMENT_F_MAX_HZ = 250e12
-MEASUREMENT_OVERLAP_WIDTH_HZ = 30e12
 
 INITIAL_GAUSSIAN_SIGMA_S = 10e-15

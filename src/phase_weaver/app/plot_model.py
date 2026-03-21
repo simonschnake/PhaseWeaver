@@ -96,7 +96,7 @@ class TimePlotModel:
             return None
 
     @property
-    def current_input_fwhm(self) -> FWHMResult:
+    def current_input_fwhm(self) -> FWHMResult | None:
         return fwhm_highest_peak(self.t_ui, self.current_input_ui)
 
     @property

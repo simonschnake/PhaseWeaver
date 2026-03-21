@@ -1,6 +1,7 @@
+from tokenize import Exponent
+
 import numpy as np
 
-from phase_weaver.app import config
 from phase_weaver.core import (
     BandLimitedDCPhysicalRFFT,
     CurrentProfile,
@@ -12,27 +13,27 @@ from phase_weaver.core import (
 )
 from phase_weaver.core.constraints import (
     CenterFirstMoment,
-    ClampMagnitude,
-    EnforceDCOne,
-    FrequencyConstraint,
     NonNegativity,
     NormalizeArea,
-    ReplacePhaseEndLinearSmooth,
     CutAfterNthZeroFromPeak,
 )
 from phase_weaver.core.measurement import MeasuredFormFactor
 from phase_weaver.core.reconstruction import (
+    ExponentialExtendMeasurement,
+    ExponentialInitializer,
+    FormFactorInitializer,
     GSMeasuredMagnitude,
     MaxIter,
     MinimumPhaseCepstrum,
     MinIter,
     PhaseStoppedChanging,
+    PredefinedMagnitude,
     PredefinedPhase,
     ReconstructionAlgorithm,
     ZeroPhase,
 )
 
-from .state import AppState, MeasurementState, ReconstructionState, ProfileModel
+from .state import ControlsState, MeasurementState, ReconstructionState, ProfileModel
 
 
 class AppLogic:
@@ -51,31 +52,32 @@ class AppLogic:
         )
 
     def compute_initial(
-        self, app_state: AppState
+        self, controls_state: ControlsState
     ) -> tuple[Profile, FormFactor, MeasuredFormFactor]:
-        transform = self._create_transform(app_state.reconstruction)
-        prof_input = self._compute_input_profile(app_state)
+        transform = self._create_transform(controls_state.reconstruction)
+        prof_input = self._compute_input_profile(controls_state)
         ff_input = self._compute_input_formfactor(prof_input, transform=transform)
-        measurement = self._make_measured_formfactor(app_state, ff_true=ff_input)
+        measurement = self._make_measured_formfactor(controls_state, ff_input=ff_input)
         return prof_input, ff_input, measurement
 
     def compute_reconstruction(
         self,
-        app_state: AppState,
+        controls_state: ControlsState,
         measured_ff: MeasuredFormFactor,
-        grid: Grid,
+        ff_input: FormFactor,
     ) -> tuple[Profile, FormFactor]:
-        reconstruction = self._build_reconstruction(app_state, measured_ff)
+        reconstruction = self._build_reconstruction(
+            controls_state, measured_ff, ff_input
+        )
 
         prof_recon, ff_recon = reconstruction.run(
-            grid=grid,
-            sigma=app_state.reconstruction.initial_gaussian_sigma_s,
+            grid=ff_input.grid, mag=ff_input.mag, measured_ff=measured_ff
         )
 
         self.phase_last = ff_recon.phase.copy()
         return prof_recon, ff_recon
 
-    def _compute_input_profile(self, app_state: AppState) -> CurrentProfile:
+    def _compute_input_profile(self, app_state: ControlsState) -> CurrentProfile:
         profile_model = ProfileModel(app_state.scenario)
         prof = profile_model.compute_profile()
         self.center_prof.apply(prof)
@@ -105,57 +107,59 @@ class AppLogic:
 
     def _build_reconstruction(
         self,
-        app_state: AppState,
+        controls_state: ControlsState,
         measured_ff: MeasuredFormFactor,
+        ff_input: FormFactor,
     ) -> ReconstructionAlgorithm:
+        recon_state = controls_state.reconstruction
+
         return GSMeasuredMagnitude(
             measured_ff=measured_ff,
-            transform=self._create_transform(app_state.reconstruction),
-            time_constraints=self._recon_time_constraints,
-            frequency_constraints=self._make_frequency_constraints(app_state),
-            stop=self._recon_stop_condition,
-            transition_width=app_state.measurement.overlap_width_hz,
+            transform=self._create_transform(recon_state),
+            formfactor_init=self._make_formfactor_init(recon_state, ff_input),
+            # time_constraints=self._recon_time_constraints,
+            # frequency_constraints=self._make_frequency_constraints(controls_state),
+            # stop=self._recon_stop_condition,
+            transition_width=controls_state.measurement.overlap_width_hz,
             overlap_power=2.0,
-            initial_sigma=app_state.reconstruction.initial_gaussian_sigma_s,
         )
 
-    def _make_phase_init(
+    def _make_formfactor_init(
         self,
-        app_state: AppState,
-        phase_in: np.ndarray,
+        recon_state: ReconstructionState,
+        ff_input: FormFactor,
     ):
-        mode = app_state.reconstruction.phase_init_mode
+        mag_mode = recon_state.mag_init_mode
+        phase_mode = recon_state.phase_init_mode
 
-        if mode == "zero":
-            return ZeroPhase()
-
-        if mode == "real":
-            return PredefinedPhase(phase=phase_in)
-
-        if mode == "minphase":
-            return MinimumPhaseCepstrum()
-
-        if mode == "last":
-            phase = self.phase_last if self.phase_last is not None else phase_in
-            return PredefinedPhase(phase=phase)
-
-        return MinimumPhaseCepstrum()
-
-    def _make_frequency_constraints(
-        self,
-        app_state: AppState,
-    ) -> FrequencyConstraint:
-        constraints = ClampMagnitude() + EnforceDCOne()
-
-        if app_state.reconstruction.linear_phase_end:
-            constraints = constraints + ReplacePhaseEndLinearSmooth(
-                start_freq=app_state.reconstruction.linear_phase_end_start_freq_hz,
-                freq_x=config.PHASE_END_REF_FREQ_HZ,
-                freq_y=app_state.reconstruction.linear_phase_end_phase_at_300_thz,
-                transition_width=30e12,
+        if mag_mode == "exp":
+            mag_init = ExponentialInitializer()
+        elif mag_mode == "real":
+            mag_init = PredefinedMagnitude(mag=ff_input.mag)
+        elif mag_mode == "measext":
+            mag_init = ExponentialExtendMeasurement()
+        elif mag_mode == "CRISP":
+            print(
+                "Warning: CRISP magnitude initialization is not implemented. Falling back to exponential initialization."
             )
+            mag_init = ExponentialInitializer()
 
-        return constraints
+        if phase_mode == "zero":
+            phase_init = ZeroPhase()
+        elif phase_mode == "real":
+            phase_init = PredefinedPhase(phase=ff_input.phase)
+        elif phase_mode == "minphase":
+            phase_init = MinimumPhaseCepstrum()
+        elif phase_mode == "last":
+            phase = self.phase_last if self.phase_last is not None else ff_input.phase
+            phase_init = PredefinedPhase(phase=phase)
+        elif phase_mode == "CRISP":
+            print(
+                "Warning: CRISP phase initialization is not implemented. Falling back to minimum phase cepstrum initialization."
+            )
+            phase_init = PredefinedPhase(phase=ff_input.phase)
+
+        return FormFactorInitializer(mag_init=mag_init, phase_init=phase_init)
 
     def _make_measurement_mask(
         self,
@@ -181,12 +185,16 @@ class AppLogic:
 
     def _make_measured_formfactor(
         self,
-        app_state: AppState,
-        ff_true: FormFactor,
-    ) -> MeasuredFormFactor:
-        mask = self._make_measurement_mask(app_state.measurement, ff_true)
+        controls_state: ControlsState,
+        ff_input: FormFactor,
+    ) -> MeasuredFormFactor | None:
+        if not controls_state.measurement.enabled:
+            return None
+        if controls_state.measurement.mode == "full":
+            return None
+        mask = self._make_measurement_mask(controls_state.measurement, ff_input)
 
         return MeasuredFormFactor(
-            freq=ff_true.grid.f_pos[mask],
-            mag=ff_true.mag[mask],
+            freq=ff_input.grid.f_pos[mask],
+            mag=ff_input.mag[mask],
         )

@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import phase_weaver.app.config as cfg
+
 
 class BandLimitBox(QGroupBox):
     changed = Signal()
@@ -17,20 +19,17 @@ class BandLimitBox(QGroupBox):
     def __init__(
         self,
         *,
-        enabled: bool,
-        f_cut_hz: float,
-        f_nyq_hz: float,
         parent=None,
     ):
         super().__init__("Band-limit Transform", parent)
 
         self.setCheckable(True)
-        self.setChecked(enabled)
+        self.setChecked(cfg.BAND_LIMIT_ENABLED)
         self.toggled.connect(lambda _checked: self.changed.emit())
-
+        f_nyq_hz = 1.0 / (2.0 * cfg.DT)
         form = QFormLayout(self)
         fmax_thz = max(min(333.0, f_nyq_hz * 1e-12 - 0.1), 0.2)
-        init_thz = float(np.clip(f_cut_hz * 1e-12, 0.1, 10 * fmax_thz))
+        init_thz = float(np.clip(cfg.BAND_LIMIT_F_CUT_HZ * 1e-12, 0.1, 10 * fmax_thz))
 
         self._slider, self._spin = self._make_slider_spin(
             0.1, 10 * fmax_thz, 1.0, init_thz

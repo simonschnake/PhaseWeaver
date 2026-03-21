@@ -28,7 +28,7 @@ class FWHMResult:
         return self.right_half_max - self.left_half_max
 
 
-def fwhm_highest_peak(x: np.ndarray, y: np.ndarray) -> FWHMResult:
+def fwhm_highest_peak(x: np.ndarray, y: np.ndarray) -> FWHMResult | None:
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
 
@@ -39,7 +39,8 @@ def fwhm_highest_peak(x: np.ndarray, y: np.ndarray) -> FWHMResult:
     # left crossing
     left_candidates = np.where(y[:i_peak] < half)[0]
     if len(left_candidates) == 0:
-        raise ValueError("No left half-maximum crossing found.")
+        print("Warning: No left half-maximum crossing found. Returning NaN for left_half_max.")
+        return None
 
     i1 = left_candidates[-1]  # below half
     i2 = i1 + 1  # at/above half
@@ -48,7 +49,8 @@ def fwhm_highest_peak(x: np.ndarray, y: np.ndarray) -> FWHMResult:
     # right crossing
     right_candidates = np.where(y[i_peak + 1 :] < half)[0]
     if len(right_candidates) == 0:
-        raise ValueError("No right half-maximum crossing found.")
+        print("Warning: No right half-maximum crossing found. Returning NaN for right_half_max.")
+        return None
 
     i2 = i_peak + 1 + right_candidates[0]  # first point below half
     i1 = i2 - 1  # previous point at/above half
@@ -267,43 +269,37 @@ def exponential_extend(
     x_target: np.ndarray, x_source: np.ndarray, y_source: np.ndarray, power: float = 2.0
 ) -> np.ndarray:
     """
-    Exponentially extend y_source outside the interval covered by x_source.
+    Extend y_source outside x_source using Gaussian tails
+
+        y = A * exp(-k^2 * (x - x_boundary)^2)
+
+    fitted independently on the left and right with weighted least squares.
 
     Inside the source interval, values are linearly interpolated.
-    Left and right tails are fitted independently from weighted least-squares
-    fits of log(|y|) = a + k x, using weights that emphasize the nearest edge.
 
     Parameters
     ----------
     x_target : np.ndarray
-        Target x coordinates where the extended signal should be evaluated.
+        Points where the extended signal is evaluated.
     x_source : np.ndarray
-        Source x coordinates, assumed to span [x1, x2].
+        Strictly increasing source x values.
     y_source : np.ndarray
-        Source y values corresponding to x_source.
+        Source y values.
     power : float, default=2.0
-        Exponent applied to the linear weight ramp. Larger values emphasize
-        the edges more strongly.
+        Exponent applied to the linear edge-weight ramp.
+        Larger values emphasize the boundary region more strongly.
 
     Returns
     -------
     np.ndarray
-        Extended/interpolated y values at x_target.
-
-    Notes
-    -----
-    - For x < x_source[0], uses a left exponential tail anchored at x_source[0].
-    - For x > x_source[-1], uses a right exponential tail anchored at x_source[-1].
-    - For x inside [x_source[0], x_source[-1]], uses np.interp.
-    - The exponential rates are forced to decay outward.
-    - The fit is based on log(|y|), so sign changes in the source are not modeled
-      in the exponent itself; the tail inherits the boundary sign/value.
+        Signal evaluated at x_target, interpolated inside the source interval
+        and Gaussian-extended outside it.
     """
     x_target = np.asarray(x_target, dtype=float)
     x_source = np.asarray(x_source, dtype=float)
     y_source = np.asarray(y_source, dtype=float)
 
-    if x_source.ndim != 1 or y_source.ndim != 1 or x_target.ndim != 1:
+    if x_target.ndim != 1 or x_source.ndim != 1 or y_source.ndim != 1:
         raise ValueError("x_target, x_source, and y_source must be 1D arrays.")
     if len(x_source) != len(y_source):
         raise ValueError("x_source and y_source must have the same length.")
@@ -319,33 +315,42 @@ def exponential_extend(
     eps = 1e-12
     n = len(x_source)
 
-    def estimate_rate(side: str) -> float:
-        if side == "left":
-            w = np.linspace(100.0, 1.0, n) ** power
-        elif side == "right":
-            w = np.linspace(1.0, 100.0, n) ** power
-        else:
-            raise ValueError("side must be 'left' or 'right'")
-
-        mask = np.abs(y_source) > eps
-        xx = x_source[mask]
-        yy = y_source[mask]
-        ww = w[mask]
-
-        if len(xx) < 3:
-            return 0.0
-
-        # weighted fit: log(|y|) = a + k x
-        k, _ = np.polyfit(xx, np.log(np.abs(yy)), 1, w=ww)
-        return float(k)
-
     x1 = x_source[0]
     x2 = x_source[-1]
     y1 = y_source[0]
     y2 = y_source[-1]
 
-    k_left = abs(estimate_rate("left"))
-    k_right = -abs(estimate_rate("right"))
+    def estimate_k(side: str) -> float:
+        mask = np.abs(y_source) > eps
+        if np.count_nonzero(mask) < 3:
+            return 0.0
+
+        yy = y_source[mask]
+
+        if side == "left":
+            # high weight near left boundary
+            w_full = np.linspace(100.0, 1.0, n) ** power
+            z_full = (x_source - x1) ** 2
+        elif side == "right":
+            # high weight near right boundary
+            w_full = np.linspace(1.0, 100.0, n) ** power
+            z_full = (x_source - x2) ** 2
+        else:
+            raise ValueError("side must be 'left' or 'right'")
+
+        ww = w_full[mask]
+        zz = z_full[mask]
+        ly = np.log(np.abs(yy))
+
+        # Fit: ly ≈ a + b * z, where ideally b = -k^2 <= 0
+        b, _ = np.polyfit(zz, ly, 1, w=ww)
+
+        # enforce decay away from boundary
+        k2 = max(0.0, -b)
+        return float(np.sqrt(k2))
+
+    k_left = estimate_k("left")
+    k_right = estimate_k("right")
 
     y_target = np.interp(x_target, x_source, y_source)
 
@@ -353,9 +358,11 @@ def exponential_extend(
     right_mask = x_target > x2
 
     if np.any(left_mask):
-        y_target[left_mask] = y1 * np.exp(k_left * (x_target[left_mask] - x1))
+        dx = x_target[left_mask] - x1
+        y_target[left_mask] = y1 * np.exp(-(k_left**2) * dx**2)
 
     if np.any(right_mask):
-        y_target[right_mask] = y2 * np.exp(k_right * (x_target[right_mask] - x2))
+        dx = x_target[right_mask] - x2
+        y_target[right_mask] = y2 * np.exp(-(k_right**2) * dx**2)
 
     return y_target

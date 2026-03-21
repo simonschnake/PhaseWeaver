@@ -1,10 +1,10 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 
-from phase_weaver.core import CurrentProfile, Grid, measurement
+from phase_weaver.core import CurrentProfile, Grid
 from phase_weaver.model.profiles import AsymSuperGaussParams, asymmetric_super_gaussian
 
-import phase_weaver.app.config as cfg
+from .config import CHARGE_C, DT, T_MAX
 
 
 def _default_background() -> AsymSuperGaussParams:
@@ -41,9 +41,9 @@ def _default_peak2() -> AsymSuperGaussParams:
 
 @dataclass(slots=True)
 class ProfileModelState:
-    dt: float = 1e-16
-    t_max: float = 1e-13
-    charge: float | None = None
+    dt: float = DT
+    t_max: float = T_MAX
+    charge: float = CHARGE_C
 
     background: AsymSuperGaussParams = field(default_factory=_default_background)
     peak: AsymSuperGaussParams = field(default_factory=_default_peak)
@@ -106,57 +106,23 @@ class ProfileModel:
 
 @dataclass(slots=True)
 class ReconstructionState:
-    phase_init_mode: cfg.PHASE_INIT_MODES_T
-    linear_phase_end: bool
-    linear_phase_end_start_freq_hz: float
-    linear_phase_end_phase_at_300_thz: float
+    mag_init_mode: str
+    phase_init_mode: str
     band_limit: bool
     band_limit_f_cut_hz: float
-    initial_gaussian_sigma_s: float
 
 
 @dataclass(slots=True)
 class MeasurementState:
     enabled: bool
-    mode: cfg.MEASUREMENT_MODES_T
+    mode: str
     f_min_hz: float
     f_max_hz: float
     overlap_width_hz: float
 
 
 @dataclass
-class AppState:
+class ControlsState:
     scenario: ProfileModelState
     measurement: MeasurementState
     reconstruction: ReconstructionState
-
-    @classmethod
-    def default(cls) -> "AppState":
-        return cls(
-            scenario=ProfileModelState(
-                dt=cfg.DT,
-                t_max=cfg.T_MAX,
-                charge=cfg.CHARGE_C,
-                background=cfg.BACKGROUND_SPEC,
-                peak=cfg.SPIKE_SPEC,
-                peak2_enabled=cfg.PEAK2_ENABLED,
-                peak2=cfg.SPIKE_SPEC,
-            ),
-            measurement=MeasurementState(
-                enabled=cfg.MEASUREMENT_ENABLED,
-                mode=cfg.MEASUREMENT_MODE_DEFAULT,
-                f_min_hz=cfg.MEASUREMENT_F_MIN_HZ,
-                f_max_hz=cfg.MEASUREMENT_F_MAX_HZ,
-                overlap_width_hz=cfg.MEASUREMENT_OVERLAP_WIDTH_HZ,
-            ),
-            reconstruction=ReconstructionState(
-                phase_init_mode=cfg.PHASE_INIT_DEFAULT,
-                linear_phase_end=cfg.LINEAR_PHASE_END_ENABLED,
-                linear_phase_end_start_freq_hz=cfg.LINEAR_PHASE_END_START_FREQ_HZ,
-                linear_phase_end_phase_at_300_thz=cfg.LINEAR_PHASE_END_PHASE_AT_300_THZ,
-                band_limit=cfg.BAND_LIMIT_ENABLED,
-                band_limit_f_cut_hz=cfg.BAND_LIMIT_F_CUT_HZ,
-                initial_gaussian_sigma_s=cfg.INITIAL_GAUSSIAN_SIGMA_S,
-            ),
-        )
-

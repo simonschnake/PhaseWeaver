@@ -29,13 +29,15 @@ class OptionSelectorBox(QGroupBox):
 
         self._group.idClicked.connect(lambda _id: self.changed.emit())
 
-    def selected_option(self) -> str:
+    @property
+    def mode(self) -> str:
         idx = self._group.checkedId()
         if idx < 0:
             raise RuntimeError("no option is currently selected")
         return self._labels[idx]
 
-    def select_option(self, option: str) -> None:
+    @mode.setter
+    def mode(self, option: str) -> None:
         try:
             idx = self._labels.index(option)
         except ValueError as e:
