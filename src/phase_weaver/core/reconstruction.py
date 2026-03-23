@@ -25,7 +25,8 @@ from .constraints import (
 
 from .measurement import MeasuredFormFactor
 
-from .utils import exponential_extend
+# from .utils import exponential_extend
+from .utils import quadratic_log_extend
 
 
 # =============================================================================
@@ -151,7 +152,9 @@ class FormFactorInitializer(ABC):
     mag_init: MagnitudeInitializer = field(default_factory=ExponentialInitializer)
     phase_init: PhaseInitializer = field(default_factory=ZeroPhase)
 
-    def __call__(self, grid: Grid, mag: np.ndarray | None = None, **kwargs) -> FormFactor:
+    def __call__(
+        self, grid: Grid, mag: np.ndarray | None = None, **kwargs
+    ) -> FormFactor:
         mag = self.mag_init(grid, mag=mag, **kwargs)
         phase = self.phase_init(grid, mag=mag, **kwargs)
 
@@ -177,12 +180,17 @@ class ExponentialExtendMeasurement(MagnitudeInitializer):
             raise ValueError(
                 "ExponentialExtendMeasurement requires 'measurement_ff' keyword argument of type MeasuredFormFactor"
             )
-        return exponential_extend(
-            grid.f_pos,
-            measured_ff.freq,
-            measured_ff.mag,
-            power=power,
+
+        return quadratic_log_extend(
+            grid.f_pos, measured_ff.freq, measured_ff.mag, power=power
         )
+
+        # return exponential_extend(
+        # grid.f_pos,
+        # measured_ff.freq,
+        # measured_ff.mag,
+        #    power=power,
+        # )
 
 
 class RealMagnitude(MagnitudeInitializer):
@@ -194,6 +202,7 @@ class RealMagnitude(MagnitudeInitializer):
                 "RealMagnitude requires 'mag' keyword argument of type np.ndarray"
             )
         return mag
+
 
 class PredefinedMagnitude(MagnitudeInitializer):
     """
@@ -211,6 +220,7 @@ class PredefinedMagnitude(MagnitudeInitializer):
                 f"predefined magnitude must have shape {expected}, got {self.mag.shape}"
             )
         return self.mag
+
 
 # =============================================================================
 # Stopping Criteria
@@ -459,15 +469,13 @@ class GSMagnitudeOnly(ReconstructionAlgorithm):
         NonNegativity() + NormalizeArea() + CenterFirstMoment()
     )
 
-    frequency_constraints: FrequencyConstraint = (
-        ClampMagnitude(eps=1e-6) + EnforceDCOne()
-    )
+    frequency_constraints: FrequencyConstraint = ClampMagnitude() + EnforceDCOne()
 
     stop: StopCriterion = (
         MaxIter(1_000) + PhaseStoppedChanging(tol=1e-8, patience=5) + MinIter(10)
     )
 
-    eps_mag: float = 1e-30
+    eps_mag: float = np.finfo(float).eps
 
     def run(
         self,
@@ -539,12 +547,14 @@ class GSMeasuredMagnitude(ReconstructionAlgorithm):
     transform: Transform = field(
         default_factory=lambda: DCPhysicalRFFT(unwrap_phase=True, dc_normalize=False)
     )
-    formfactor_init: FormFactorInitializer = field(default_factory=FormFactorInitializer)
+    formfactor_init: FormFactorInitializer = field(
+        default_factory=FormFactorInitializer
+    )
     time_constraints: TimeConstraint = field(
         default_factory=lambda: NonNegativity() + NormalizeArea() + CenterFirstMoment()
     )
     frequency_constraints: FrequencyConstraint = field(
-        default_factory=lambda: ClampMagnitude(eps=1e-6) + EnforceDCOne()
+        default_factory=lambda: ClampMagnitude() + EnforceDCOne()
     )
     stop: StopCriterion = field(
         default_factory=lambda: (
@@ -553,7 +563,7 @@ class GSMeasuredMagnitude(ReconstructionAlgorithm):
     )
     transition_width: float | None = None
     overlap_power: float = 2.0
-    eps_mag: float = 1e-30
+    eps_mag: float = np.finfo(float).eps
 
     def __post_init__(self) -> None:
         if self.measured_ff is not None:
@@ -583,8 +593,6 @@ class GSMeasuredMagnitude(ReconstructionAlgorithm):
 
         # 1) initial full-grid form factor from initializer
         ff = self.formfactor_init(grid, mag=mag, measured_ff=self.measured_ff)
-        if mag is not None:
-            ff.mag = mag.copy()
         self.frequency_constraints.apply(ff)
 
         self.stop.reset()

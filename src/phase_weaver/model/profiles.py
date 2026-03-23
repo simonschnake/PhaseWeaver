@@ -23,7 +23,7 @@ def asymmetric_super_gaussian(
     order: float,
     amplitude: float = 1.0,
     normalize_area: bool = False,
-    eps: float = 1e-12,
+    eps: float = np.finfo(float).eps,
 ) -> np.ndarray:
     """
     Asymmetric super-Gaussian / generalized Gaussian (piecewise width).

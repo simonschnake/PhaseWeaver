@@ -1,7 +1,7 @@
 # -----------------------------
 # Constants / UI units
 # -----------------------------
-from typing import Literal
+from enum import Enum
 
 TIME_UNIT = "fs"
 S_TO_T = 1e15
@@ -12,11 +12,26 @@ DT = 1e-16
 T_MAX = 1e-13
 CHARGE_C = 250e-12  # 250 pC
 
-MAG_INIT_MODES = ["exp", "real", "measext", "CRISP"]
-MAG_INIT_DEFAULT = "exp"
 
-PHASE_INIT_MODES = ["zero", "real", "minphase", "last", "CRISP"]
-PHASE_INIT_DEFAULT = "zero"
+class MAG_INIT_MODE(Enum):
+    EXP = "exp"
+    REAL = "real"
+    MEASEXT = "measext"
+    CRISP = "CRISP"
+
+
+MAG_INIT_DEFAULT = MAG_INIT_MODE.MEASEXT
+
+
+class PHASE_INIT_MODE(Enum):
+    ZERO = "zero"
+    REAL = "real"
+    MINPHASE = "minphase"
+    LAST = "last"
+    CRISP = "CRISP"
+
+
+PHASE_INIT_DEFAULT = PHASE_INIT_MODE.ZERO
 
 SPIKE_SPEC = {
     "center_fs": (-20.0, 20.0, 1.0, -10.0),
@@ -36,8 +51,6 @@ BACKGROUND_SPEC = {
 PEAK2_ENABLED = False
 
 C_NM_THz = 299792.458
-F_EPS_THz = 1e-6
-L_EPS_NM = 1e-6
 PHASE_END_REF_FREQ_HZ = 300e12
 
 
@@ -52,15 +65,24 @@ DEFAULT_SPECTRUM_FMAX_HZ = 333e12
 
 # Measurement parameters
 
-MEASUREMENT_MODES = ["full", "below_cut", "between"]
-MEASUREMENT_ENABLED = False
-MEASUREMENT_MODE_DEFAULT = "full"
+
+class MEASUREMENT_MODE(Enum):
+    FULL = "full"
+    BELOW_CUT = "below_cut"
+    BETWEEN = "between"
+
+
+MEASUREMENT_MODE_DEFAULT = MEASUREMENT_MODE.BETWEEN
+
 MEASUREMENT_RANGE_MIN_THZ = 0.0
 MEASUREMENT_RANGE_MAX_THZ = 400.0
 MEASUREMENT_RANGE_STEP_THZ = 0.1
-MEASUREMENT_F_MIN_DEFAULT_THZ = 50.0
-MEASUREMENT_F_MAX_DEFAULT_THZ = 250.0
+MEASUREMENT_F_MIN_DEFAULT_THZ = 119.0
+MEASUREMENT_F_MAX_DEFAULT_THZ = 333.0
 MEASUREMENT_OVERLAP_WIDTH_DEFAULT_THZ = 30.0
-
+MEASUREMENT_SCALE_MIN = 0.01
+MEASUREMENT_SCALE_MAX = 100.0
+MEASUREMENT_SCALE_STEP = 0.01
+MEASUREMENT_SCALE_DEFAULT = 1.0
 
 INITIAL_GAUSSIAN_SIGMA_S = 10e-15

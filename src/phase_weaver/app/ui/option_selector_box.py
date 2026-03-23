@@ -1,3 +1,6 @@
+from enum import Enum
+from typing import Type
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QButtonGroup, QGroupBox, QHBoxLayout, QPushButton
 
@@ -5,48 +8,48 @@ from PySide6.QtWidgets import QButtonGroup, QGroupBox, QHBoxLayout, QPushButton
 class OptionSelectorBox(QGroupBox):
     changed = Signal()
 
-    def __init__(self, title: str, labels: list[str], default: str, parent=None):
-        if not labels:
-            raise ValueError("labels must not be empty")
-        if default not in labels:
-            raise ValueError(f"default {default!r} is not in labels")
-        if len(set(labels)) != len(labels):
-            raise ValueError("labels must be unique")
-
+    def __init__(
+        self, title: str, enum_cls: Type[Enum], default: Enum | None = None, parent=None
+    ):
         super().__init__(title, parent)
 
-        self._labels = list(labels)
+        self._enum_cls = enum_cls
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
+        self._id_to_enum: dict[int, Enum] = {}
+        self._enum_to_id: dict[Enum, int] = {}
 
         layout = QHBoxLayout(self)
-        for i, label in enumerate(self._labels):
-            btn = QPushButton(label)
+
+        for i, member in enumerate(self._enum_cls):
+            text = str(member.value)
+            btn = QPushButton(text)
             btn.setCheckable(True)
-            btn.setChecked(label == default)
+
+            if default is not None and default == member:
+                btn.setChecked(True)
+
             layout.addWidget(btn)
             self._group.addButton(btn, i)
+            self._id_to_enum[i] = member
+            self._enum_to_id[member] = i
 
         self._group.idClicked.connect(lambda _id: self.changed.emit())
 
     @property
-    def mode(self) -> str:
-        idx = self._group.checkedId()
-        if idx < 0:
+    def mode(self) -> Enum:
+        button_id = self._group.checkedId()
+        if button_id < 0:
             raise RuntimeError("no option is currently selected")
-        return self._labels[idx]
+        return self._id_to_enum[button_id]
 
     @mode.setter
-    def mode(self, option: str) -> None:
-        try:
-            idx = self._labels.index(option)
-        except ValueError as e:
+    def mode(self, mode: Enum) -> None:
+        button_id = self._enum_to_id.get(mode, None)
+        if button_id is None:
             raise ValueError(
-                f"unknown option {option!r}; expected one of {self._labels!r}"
-            ) from e
+                f"unknown option {mode!r}; expected one of {self._enum_cls!r}"
+            )
 
-        btn = self._group.button(idx)
-        if btn is None:
-            raise RuntimeError(f"no button found for option index {idx}")
-
+        btn = self._group.button(button_id)
         btn.setChecked(True)

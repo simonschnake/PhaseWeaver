@@ -4,7 +4,15 @@ from dataclasses import dataclass, field
 from phase_weaver.core import CurrentProfile, Grid
 from phase_weaver.model.profiles import AsymSuperGaussParams, asymmetric_super_gaussian
 
-from .config import CHARGE_C, DT, T_MAX
+from .config import (
+    CHARGE_C,
+    DT,
+    MAG_INIT_MODE,
+    PHASE_INIT_MODE,
+    T_MAX,
+    MEASUREMENT_MODE,
+)
+from typing import Type
 
 
 def _default_background() -> AsymSuperGaussParams:
@@ -106,19 +114,19 @@ class ProfileModel:
 
 @dataclass(slots=True)
 class ReconstructionState:
-    mag_init_mode: str
-    phase_init_mode: str
+    mag_init_mode: Type[MAG_INIT_MODE]
+    phase_init_mode: Type[PHASE_INIT_MODE]
     band_limit: bool
     band_limit_f_cut_hz: float
 
 
 @dataclass(slots=True)
 class MeasurementState:
-    enabled: bool
-    mode: str
+    mode: MEASUREMENT_MODE
     f_min_hz: float
     f_max_hz: float
     overlap_width_hz: float
+    scale: float
 
 
 @dataclass

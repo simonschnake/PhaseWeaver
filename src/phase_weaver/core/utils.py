@@ -39,7 +39,9 @@ def fwhm_highest_peak(x: np.ndarray, y: np.ndarray) -> FWHMResult | None:
     # left crossing
     left_candidates = np.where(y[:i_peak] < half)[0]
     if len(left_candidates) == 0:
-        print("Warning: No left half-maximum crossing found. Returning NaN for left_half_max.")
+        print(
+            "Warning: No left half-maximum crossing found. Returning NaN for left_half_max."
+        )
         return None
 
     i1 = left_candidates[-1]  # below half
@@ -49,7 +51,9 @@ def fwhm_highest_peak(x: np.ndarray, y: np.ndarray) -> FWHMResult | None:
     # right crossing
     right_candidates = np.where(y[i_peak + 1 :] < half)[0]
     if len(right_candidates) == 0:
-        print("Warning: No right half-maximum crossing found. Returning NaN for right_half_max.")
+        print(
+            "Warning: No right half-maximum crossing found. Returning NaN for right_half_max."
+        )
         return None
 
     i2 = i_peak + 1 + right_candidates[0]  # first point below half
@@ -271,7 +275,7 @@ def exponential_extend(
     """
     Extend y_source outside x_source using Gaussian tails
 
-        y = A * exp(-k^2 * (x - x_boundary)^2)
+        y = A * exp(-1/2 (sigma * x)^2 )
 
     fitted independently on the left and right with weighted least squares.
 
@@ -312,57 +316,123 @@ def exponential_extend(
     if power <= 0:
         raise ValueError("power must be positive.")
 
-    eps = 1e-12
     n = len(x_source)
+    w_left = np.linspace(100.0, 1.0, n) ** power
+    w_right = np.linspace(1.0, 100.0, n) ** power
 
-    x1 = x_source[0]
-    x2 = x_source[-1]
-    y1 = y_source[0]
-    y2 = y_source[-1]
+    yy = -2 * np.log(y_source)
+    X = np.column_stack([x_source * x_source, np.ones_like(x_source)])
 
-    def estimate_k(side: str) -> float:
-        mask = np.abs(y_source) > eps
-        if np.count_nonzero(mask) < 3:
-            return 0.0
+    sw_left = np.sqrt(w_left)
 
-        yy = y_source[mask]
+    Xw_left = X * sw_left[:, np.newaxis]
+    yw_left = yy * sw_left
 
-        if side == "left":
-            # high weight near left boundary
-            w_full = np.linspace(100.0, 1.0, n) ** power
-            z_full = (x_source - x1) ** 2
-        elif side == "right":
-            # high weight near right boundary
-            w_full = np.linspace(1.0, 100.0, n) ** power
-            z_full = (x_source - x2) ** 2
-        else:
-            raise ValueError("side must be 'left' or 'right'")
+    sigma2_left, neg_two_ln_A_left = np.linalg.lstsq(Xw_left, yw_left, rcond=None)[0]
+    A_left = np.exp(-0.5 * neg_two_ln_A_left)
 
-        ww = w_full[mask]
-        zz = z_full[mask]
-        ly = np.log(np.abs(yy))
+    sw_right = np.sqrt(w_right)
+    X_right = X * sw_right[:, np.newaxis]
+    yw_right = yy * sw_right
 
-        # Fit: ly ≈ a + b * z, where ideally b = -k^2 <= 0
-        b, _ = np.polyfit(zz, ly, 1, w=ww)
-
-        # enforce decay away from boundary
-        k2 = max(0.0, -b)
-        return float(np.sqrt(k2))
-
-    k_left = estimate_k("left")
-    k_right = estimate_k("right")
+    sigma2_right, neg_two_ln_A_right = np.linalg.lstsq(X_right, yw_right, rcond=None)[0]
+    A_right = np.exp(-0.5 * neg_two_ln_A_right)
 
     y_target = np.interp(x_target, x_source, y_source)
 
-    left_mask = x_target < x1
-    right_mask = x_target > x2
+    left_mask = x_target < x_source[0]
+    right_mask = x_target > x_source[-1]
 
     if np.any(left_mask):
-        dx = x_target[left_mask] - x1
-        y_target[left_mask] = y1 * np.exp(-(k_left**2) * dx**2)
+        x = x_target[left_mask]
+        y_target[left_mask] = A_left * np.exp(-0.5 * sigma2_left * x**2)
 
     if np.any(right_mask):
-        dx = x_target[right_mask] - x2
-        y_target[right_mask] = y2 * np.exp(-(k_right**2) * dx**2)
+        x = x_target[right_mask]
+        y_target[right_mask] = A_right * np.exp(-0.5 * sigma2_right * x**2)
+
+    return y_target
+
+
+def quadratic_log_extend(
+    x_target: np.ndarray,
+    x_source: np.ndarray,
+    y_source: np.ndarray,
+    power: float = 2.0,
+) -> np.ndarray:
+    """
+    Extend y_source outside x_source by fitting quadratic models to log(y)
+    on the left and right:
+
+        log(y) = a*x^2 + b*x + c
+
+    using weighted least squares.
+
+    Inside the source interval, values are linearly interpolated.
+
+    Parameters
+    ----------
+    x_target : np.ndarray
+        Points where the extended signal is evaluated.
+    x_source : np.ndarray
+        Strictly increasing source x values.
+    y_source : np.ndarray
+        Source y values. Must be strictly positive.
+    power : float, default=2.0
+        Exponent applied to the edge-weight ramp.
+        Larger values emphasize boundary regions more strongly.
+
+    Returns
+    -------
+    np.ndarray
+        Signal evaluated at x_target, interpolated inside the source interval
+        and exponentially extended outside it.
+    """
+    x_target = np.asarray(x_target, dtype=float)
+    x_source = np.asarray(x_source, dtype=float)
+    y_source = np.asarray(y_source, dtype=float)
+
+    if x_target.ndim != 1 or x_source.ndim != 1 or y_source.ndim != 1:
+        raise ValueError("x_target, x_source, and y_source must be 1D arrays.")
+    if len(x_source) != len(y_source):
+        raise ValueError("x_source and y_source must have the same length.")
+    if len(x_source) < 3:
+        raise ValueError("Need at least 3 source points.")
+    if not np.all(np.isfinite(x_source)) or not np.all(np.isfinite(y_source)):
+        raise ValueError("x_source and y_source must contain only finite values.")
+    if not np.all(np.diff(x_source) > 0):
+        raise ValueError("x_source must be strictly increasing.")
+    if np.any(y_source <= 0):
+        raise ValueError("y_source must be strictly positive for log fitting.")
+    if power <= 0:
+        raise ValueError("power must be positive.")
+
+    n = len(x_source)
+    w_left = np.linspace(100.0, 1.0, n) ** power
+    w_right = np.linspace(1.0, 100.0, n) ** power
+
+    logy = np.log(y_source)
+    X = np.column_stack([x_source**2, x_source, np.ones_like(x_source)])
+
+    def fit_quadratic_log(weights):
+        sw = np.sqrt(weights)
+        coeffs, *_ = np.linalg.lstsq(X * sw[:, None], logy * sw, rcond=None)
+        return coeffs  # a, b, c
+
+    a_left, b_left, c_left = fit_quadratic_log(w_left)
+    a_right, b_right, c_right = fit_quadratic_log(w_right)
+
+    y_target = np.interp(x_target, x_source, y_source)
+
+    left_mask = x_target < x_source[0]
+    right_mask = x_target > x_source[-1]
+
+    if np.any(left_mask):
+        x = x_target[left_mask]
+        y_target[left_mask] = np.exp(a_left * x**2 + b_left * x + c_left)
+
+    if np.any(right_mask):
+        x = x_target[right_mask]
+        y_target[right_mask] = np.exp(a_right * x**2 + b_right * x + c_right)
 
     return y_target

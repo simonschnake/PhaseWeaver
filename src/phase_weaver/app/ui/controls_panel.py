@@ -38,10 +38,10 @@ class ControlsPanel(QWidget):
         )
 
         self.mag_init_box = OptionSelectorBox(
-            "Magnitude Init", labels=cfg.MAG_INIT_MODES, default=cfg.MAG_INIT_DEFAULT
+            "Magnitude Init", enum_cls=cfg.MAG_INIT_MODE, default=cfg.MAG_INIT_DEFAULT
         )
         self.phase_init_box = OptionSelectorBox(
-            "Phase Init", labels=cfg.PHASE_INIT_MODES, default=cfg.PHASE_INIT_DEFAULT
+            "Phase Init", enum_cls=cfg.PHASE_INIT_MODE, default=cfg.PHASE_INIT_DEFAULT
         )
 
         self.measurement_box = MeasurementBox()
