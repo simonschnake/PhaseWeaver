@@ -26,7 +26,8 @@ from .constraints import (
 from .measurement import MeasuredFormFactor
 
 # from .utils import exponential_extend
-from .utils import quadratic_log_extend
+# from .utils import quadratic_log_extend
+from .utils import gaussian_extend
 
 
 # =============================================================================
@@ -173,7 +174,7 @@ class ExponentialExtendMeasurement(MagnitudeInitializer):
         self,
         grid: Grid,
         measured_ff: MeasuredFormFactor | None = None,
-        power: float = 2,
+        power: float = 4,
         **kwargs,
     ) -> np.ndarray:
         if measured_ff is None:
@@ -181,9 +182,7 @@ class ExponentialExtendMeasurement(MagnitudeInitializer):
                 "ExponentialExtendMeasurement requires 'measurement_ff' keyword argument of type MeasuredFormFactor"
             )
 
-        return quadratic_log_extend(
-            grid.f_pos, measured_ff.freq, measured_ff.mag, power=power
-        )
+        return gaussian_extend(grid.f_pos, measured_ff.freq, measured_ff.mag)
 
         # return exponential_extend(
         # grid.f_pos,

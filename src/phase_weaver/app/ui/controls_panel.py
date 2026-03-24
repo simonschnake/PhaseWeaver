@@ -1,5 +1,5 @@
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 import phase_weaver.app.config as cfg
 
@@ -17,6 +17,7 @@ from .option_selector_box import OptionSelectorBox
 
 class ControlsPanel(QWidget):
     changed = Signal()
+    export_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -70,6 +71,13 @@ class ControlsPanel(QWidget):
         recon_col.addWidget(self.phase_init_box)
         recon_col.addWidget(self.measurement_box)
         recon_col.addWidget(self.band_limit_box)
+
+        # Small Debugging Export
+        self.export_button = QPushButton("Export Data")
+        self.export_button.clicked.connect(self.export_requested.emit)
+        recon_col.addWidget(self.export_button)
+
+
         recon_col.addStretch(1)
 
         layout = QHBoxLayout(self)

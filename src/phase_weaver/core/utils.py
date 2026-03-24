@@ -409,7 +409,9 @@ def quadratic_log_extend(
 
     n = len(x_source)
     w_left = np.linspace(100.0, 1.0, n) ** power
+    w_left = w_left / w_left.sum()  # normalize to sum to 1
     w_right = np.linspace(1.0, 100.0, n) ** power
+    w_right = w_right / w_right.sum()  # normalize to sum to 1
 
     logy = np.log(y_source)
     X = np.column_stack([x_source**2, x_source, np.ones_like(x_source)])
@@ -424,8 +426,8 @@ def quadratic_log_extend(
 
     y_target = np.interp(x_target, x_source, y_source)
 
-    left_mask = x_target < x_source[0]
-    right_mask = x_target > x_source[-1]
+    left_mask = x_target <= x_source[0]
+    right_mask = x_target >= x_source[-1]
 
     if np.any(left_mask):
         x = x_target[left_mask]
@@ -434,5 +436,64 @@ def quadratic_log_extend(
     if np.any(right_mask):
         x = x_target[right_mask]
         y_target[right_mask] = np.exp(a_right * x**2 + b_right * x + c_right)
+
+    return y_target
+
+
+def gaussian_extend(
+    x_target: np.ndarray, x_source: np.ndarray, y_source: np.ndarray
+) -> np.ndarray:
+    """
+    Extend y_source outside x_source using Gaussian tails
+
+        y = A * exp(-1/2 (sigma * x)^2 )
+
+    fitted on the full area of x_source.
+
+    Inside the source interval, values are linearly interpolated.
+
+    Parameters
+    ----------
+    x_target : np.ndarray
+        Points where the extended signal is evaluated.
+    x_source : np.ndarray
+        Strictly increasing source x values.
+    y_source : np.ndarray
+        Source y values.
+    power : float, default=2.0
+        Exponent applied to the linear edge-weight ramp.
+        Larger values emphasize the boundary region more strongly.
+
+    Returns
+    -------
+    np.ndarray
+        Signal evaluated at x_target, interpolated inside the source interval
+        and Gaussian-extended outside it.
+    """
+    x_target = np.asarray(x_target, dtype=float)
+    x_source = np.asarray(x_source, dtype=float)
+    y_source = np.asarray(y_source, dtype=float)
+
+    if x_target.ndim != 1 or x_source.ndim != 1 or y_source.ndim != 1:
+        raise ValueError("x_target, x_source, and y_source must be 1D arrays.")
+    if len(x_source) != len(y_source):
+        raise ValueError("x_source and y_source must have the same length.")
+    if len(x_source) < 3:
+        raise ValueError("Need at least 3 source points.")
+    if not np.all(np.isfinite(x_source)) or not np.all(np.isfinite(y_source)):
+        raise ValueError("x_source and y_source must contain only finite values.")
+    if not np.all(np.diff(x_source) > 0):
+        raise ValueError("x_source must be strictly increasing.")
+
+    yy = -2 * np.log(y_source)
+    X = np.column_stack([x_source * x_source, np.ones_like(x_source)])
+
+    sigma2, neg_two_ln_A = np.linalg.lstsq(X, yy, rcond=None)[0]
+    A = np.exp(-0.5 * neg_two_ln_A)
+
+    y_target = A * np.exp(-0.5 * sigma2 * x_target**2)
+
+    mask_inside = (x_target >= x_source[0]) & (x_target <= x_source[-1])
+    y_target[mask_inside] = np.interp(x_target[mask_inside], x_source, y_source)
 
     return y_target

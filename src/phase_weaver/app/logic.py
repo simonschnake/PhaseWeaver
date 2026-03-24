@@ -34,6 +34,7 @@ from phase_weaver.core.reconstruction import (
     ZeroPhase,
 )
 
+from .plot_model import SpectrumPlotModel, TimePlotModel
 from .state import ControlsState, MeasurementState, ProfileModel, ReconstructionState
 
 
@@ -81,7 +82,7 @@ class AppLogic:
         self.phase_last = ff_recon.phase.copy()
         return prof_recon, ff_recon
 
-    def _compute_input_profile(self, app_state: ControlsState) -> CurrentProfile:
+    def _compute_input_profile(self, app_state: ControlsState) -> Profile:
         profile_model = ProfileModel(app_state.scenario)
         prof = profile_model.compute_profile()
         self.center_prof.apply(prof)
@@ -208,3 +209,32 @@ class AppLogic:
             freq=ff_input.grid.f_pos[mask],
             mag=ff_input.mag[mask] * scale,
         )
+
+    def export_npz(
+        self,
+        time_model: TimePlotModel | None,
+        spectrum_model: SpectrumPlotModel | None,
+    ) -> None:
+        payload = {
+            "t": time_model.t_ui if time_model is not None else np.array([]),
+            "current_recon": time_model.current_recon_ui
+            if time_model is not None
+            else np.array([]),
+            "current_input": time_model.current_input_ui
+            if time_model is not None
+            else np.array([]),
+            "f": spectrum_model.f_ui if spectrum_model is not None else np.array([]),
+            "mag_recon": spectrum_model.mag_recon_ui
+            if spectrum_model is not None
+            else np.array([]),
+            "phase_recon": spectrum_model.phase_recon_ui
+            if spectrum_model is not None
+            else np.array([]),
+            "mag_input": spectrum_model.mag_input_ui
+            if spectrum_model is not None
+            else np.array([]),
+            "phase_input": spectrum_model.phase_input_ui
+            if spectrum_model is not None
+            else np.array([]),
+        }
+        np.savez(file="export.npz", **payload)

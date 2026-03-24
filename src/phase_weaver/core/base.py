@@ -186,7 +186,7 @@ class FormFactor:
 
     @classmethod
     def from_profile(
-        cls, profile: CurrentProfile, transform: Transform | None = None
+        cls, profile: Profile, transform: Transform | None = None
     ) -> FormFactor:
         if transform is None:
             transform = DCPhysicalRFFT()
@@ -195,8 +195,8 @@ class FormFactor:
 
     def to_profile(
         self, transform: Transform | None = None, charge: float | None = None
-    ) -> CurrentProfile:
-        return CurrentProfile.from_form_factor(self, transform=transform, charge=charge)
+    ) -> Profile:
+        return Profile.from_form_factor(self, transform=transform, charge=charge)
 
     @property
     def value(self) -> np.ndarray:

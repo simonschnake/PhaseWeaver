@@ -26,6 +26,7 @@ class MainWindow(QMainWindow):
         self.resize(1800, 650)
 
         self.controls_panel.changed.connect(self.schedule_updates)
+        self.controls_panel.export_requested.connect(self.export_requested)
 
         self.redraw_timer = QTimer(self)
         self.redraw_timer.setSingleShot(True)
@@ -44,9 +45,7 @@ class MainWindow(QMainWindow):
 
     def redraw_input(self) -> None:
         state = self.controls_panel.get_state()
-        prof_input, ff_input, _ = self.logic.compute_initial(
-            controls_state=state
-        )
+        prof_input, ff_input, _ = self.logic.compute_initial(controls_state=state)
         self.plot_panel.render_input(prof_input, ff_input)
 
     def redraw_reconstruction(self) -> None:
@@ -61,3 +60,9 @@ class MainWindow(QMainWindow):
         )
         prof_recon.charge = prof_input.charge
         self.plot_panel.render_reconstruction(prof_recon, ff_recon)
+
+    def export_requested(self) -> None:
+        self.logic.export_npz(
+            self.plot_panel.time_model,
+            self.plot_panel.spectrum_model,
+        )

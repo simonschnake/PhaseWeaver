@@ -90,3 +90,6 @@ nuitka-crash-report.xml
 *.build/
 *.onefile-build/
 *.onefile-dist/
+
+# export
+export.npz
