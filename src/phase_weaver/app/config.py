@@ -9,7 +9,8 @@ T_TO_S = 1e-15
 
 # Profile parameters
 DT = 1e-16
-T_MAX = 1e-13
+T_MAX = 1e-12
+T_MAX_UI: float = 1e-13
 CHARGE_C = 250e-12  # 250 pC
 
 
@@ -44,7 +45,7 @@ SPIKE_SPEC = {
 BACKGROUND_SPEC = {
     "width_fs": (1.0, 100.0, 0.5, 21.91914604893585),
     "skew": (-1.0, 1.0, 0.1, 0.0),
-    "order": (1e-8, 10.0, 0.10, 1.0),
+    "order": (0.01, 10.0, 0.10, 1.0),
     "amplitude": (0.0, 1e5, 100.0, 5819.0),
 }
 

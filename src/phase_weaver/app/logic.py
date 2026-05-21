@@ -1,5 +1,3 @@
-from tokenize import Exponent
-
 import numpy as np
 
 from phase_weaver.app.config import MAG_INIT_MODE, MEASUREMENT_MODE, PHASE_INIT_MODE

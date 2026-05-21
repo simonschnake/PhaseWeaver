@@ -11,8 +11,8 @@ import phase_weaver.app.config as cfg
 class TimePlotModel:
     profile_input: CurrentProfile
     profile_recon: CurrentProfile | None = None
-    t_min: float | None = None
-    t_max: float | None = None
+    t_min: float | None = -cfg.T_MAX_UI
+    t_max: float | None = cfg.T_MAX_UI
 
     def __post_init__(self):
         if type(self.profile_input) is Profile:

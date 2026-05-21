@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.optimize import least_squares
 
 
 def trapz_uniform(dt: float, y: np.ndarray) -> float:
@@ -31,6 +32,10 @@ class FWHMResult:
 def fwhm_highest_peak(x: np.ndarray, y: np.ndarray) -> FWHMResult | None:
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
+
+    if x.ndim != 1 or y.ndim != 1:
+        print("Warning: x and y must be 1D. Returning None.")
+        return None
 
     i_peak = np.argmax(y)
     y_peak = y[i_peak]
@@ -446,7 +451,7 @@ def gaussian_extend(
     """
     Extend y_source outside x_source using Gaussian tails
 
-        y = A * exp(-1/2 (sigma * x)^2 )
+        y = A * exp(- k * x^2 )
 
     fitted on the full area of x_source.
 
@@ -460,10 +465,6 @@ def gaussian_extend(
         Strictly increasing source x values.
     y_source : np.ndarray
         Source y values.
-    power : float, default=2.0
-        Exponent applied to the linear edge-weight ramp.
-        Larger values emphasize the boundary region more strongly.
-
     Returns
     -------
     np.ndarray
@@ -485,13 +486,22 @@ def gaussian_extend(
     if not np.all(np.diff(x_source) > 0):
         raise ValueError("x_source must be strictly increasing.")
 
-    yy = -2 * np.log(y_source)
-    X = np.column_stack([x_source * x_source, np.ones_like(x_source)])
+    y_mean = y_source.mean()
 
-    sigma2, neg_two_ln_A = np.linalg.lstsq(X, yy, rcond=None)[0]
-    A = np.exp(-0.5 * neg_two_ln_A)
+    x_mean = x_source.mean()
+    x_scaled = x_source / x_mean
+    z = np.log(y_source / y_mean)
 
-    y_target = A * np.exp(-0.5 * sigma2 * x_target**2)
+    def residual(params, x, z):
+        a, p = params
+        k = np.log(1+np.exp(p)) # ensure positivity
+        return a - k * x**2 - z
+
+    res = least_squares(residual, x0=[z.max(), 0.0], args=(x_scaled, z))
+    a, p = res.x
+    k = np.log(1+np.exp(p)) # ensure positivity
+
+    y_target = y_mean * np.exp(a - k * (x_target / x_mean)**2)
 
     mask_inside = (x_target >= x_source[0]) & (x_target <= x_source[-1])
     y_target[mask_inside] = np.interp(x_target[mask_inside], x_source, y_source)
