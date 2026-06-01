@@ -446,16 +446,35 @@ def quadratic_log_extend(
 
 
 def gaussian_extend(
-    x_target: np.ndarray, x_source: np.ndarray, y_source: np.ndarray
+    x_target: np.ndarray,
+    x_source: np.ndarray,
+    y_source: np.ndarray,
+    *,
+    n_tail: int = 5,
+    lower_derivative_zero_at: float = 0.0,
+    min_positive: float | None = None,
 ) -> np.ndarray:
     """
-    Extend y_source outside x_source using Gaussian tails
-
-        y = A * exp(- k * x^2 )
-
-    fitted on the full area of x_source.
+    Extend y_source outside x_source.
 
     Inside the source interval, values are linearly interpolated.
+
+    Below the source range, the extension is fitted in log-space with the
+    constraint that dy/dx = 0 at lower_derivative_zero_at.
+
+        log(y) = a + b * (x - lower_derivative_zero_at)^2
+
+    This guarantees:
+
+        d/dx log(y) = 0 at x = lower_derivative_zero_at
+
+    and therefore:
+
+        dy/dx = 0 at x = lower_derivative_zero_at
+
+    Above the source range, the extension uses a log-linear tail:
+
+        log(y) = a + b * x
 
     Parameters
     ----------
@@ -464,12 +483,18 @@ def gaussian_extend(
     x_source : np.ndarray
         Strictly increasing source x values.
     y_source : np.ndarray
-        Source y values.
+        Source y values. Must be strictly positive unless min_positive is given.
+    n_tail : int, default 5
+        Number of points from each end of x_source used to fit each tail.
+    lower_derivative_zero_at : float, default 0.0
+        Location where the lower-side extension should have derivative zero.
+    min_positive : float or None, default None
+        Optional lower clipping value for y before fitting in log-space.
+
     Returns
     -------
     np.ndarray
-        Signal evaluated at x_target, interpolated inside the source interval
-        and Gaussian-extended outside it.
+        Signal evaluated at x_target.
     """
     x_target = np.asarray(x_target, dtype=float)
     x_source = np.asarray(x_source, dtype=float)
@@ -481,29 +506,157 @@ def gaussian_extend(
         raise ValueError("x_source and y_source must have the same length.")
     if len(x_source) < 3:
         raise ValueError("Need at least 3 source points.")
+    if not np.all(np.isfinite(x_target)):
+        raise ValueError("x_target must contain only finite values.")
     if not np.all(np.isfinite(x_source)) or not np.all(np.isfinite(y_source)):
         raise ValueError("x_source and y_source must contain only finite values.")
     if not np.all(np.diff(x_source) > 0):
         raise ValueError("x_source must be strictly increasing.")
 
-    y_mean = y_source.mean()
+    n = len(x_source)
+    if not 2 <= n_tail <= n:
+        raise ValueError("n_tail must satisfy 2 <= n_tail <= len(x_source).")
 
-    x_mean = x_source.mean()
-    x_scaled = x_source / x_mean
-    z = np.log(y_source / y_mean)
+    if min_positive is None:
+        if np.any(y_source <= 0):
+            raise ValueError(
+                "Log-space extension requires y_source to be strictly positive. "
+                "Pass min_positive to clip non-positive values if appropriate."
+            )
+        y_fit = y_source
+    else:
+        if min_positive <= 0:
+            raise ValueError("min_positive must be positive.")
+        y_fit = np.maximum(y_source, min_positive)
 
-    def residual(params, x, z):
-        a, p = params
-        k = np.log(1+np.exp(p)) # ensure positivity
-        return a - k * x**2 - z
+    log_y_fit = np.log(y_fit)
 
-    res = least_squares(residual, x0=[z.max(), 0.0], args=(x_scaled, z))
-    a, p = res.x
-    k = np.log(1+np.exp(p)) # ensure positivity
+    x_left = x_source[0]
+    x_right = x_source[-1]
 
-    y_target = y_mean * np.exp(a - k * (x_target / x_mean)**2)
+    # ------------------------------------------------------------------
+    # Lower-side extension:
+    #
+    #     log(y) = a + b * (x - x0)^2
+    #
+    # This guarantees derivative zero at x0.
+    # ------------------------------------------------------------------
+    x0 = lower_derivative_zero_at
 
-    mask_inside = (x_target >= x_source[0]) & (x_target <= x_source[-1])
-    y_target[mask_inside] = np.interp(x_target[mask_inside], x_source, y_source)
+    x_lower_tail = x_source[:n_tail]
+    log_y_lower_tail = log_y_fit[:n_tail]
+
+    u_lower = (x_lower_tail - x0) ** 2
+
+    # Linear least squares:
+    # log(y) = a + b * u
+    lower_coeff = np.polyfit(u_lower, log_y_lower_tail, deg=1)
+    b_lower = lower_coeff[0]
+    a_lower = lower_coeff[1]
+
+    # ------------------------------------------------------------------
+    # Upper-side extension:
+    #
+    #     log(y) = a + b * x
+    #
+    # You can change this to another constrained model if needed.
+    # ------------------------------------------------------------------
+    x_upper_tail = x_source[-n_tail:]
+    log_y_upper_tail = log_y_fit[-n_tail:]
+
+    upper_coeff = np.polyfit(x_upper_tail, log_y_upper_tail, deg=1)
+    b_upper = upper_coeff[0]
+    a_upper = upper_coeff[1]
+
+    y_target = np.empty_like(x_target, dtype=float)
+
+    mask_lower = x_target < x_left
+    mask_inside = (x_target >= x_left) & (x_target <= x_right)
+    mask_upper = x_target > x_right
+
+    # Inside: ordinary interpolation in original y-space
+    y_target[mask_inside] = np.interp(
+        x_target[mask_inside],
+        x_source,
+        y_source,
+    )
+
+    # Below range: constrained log-space extension
+    log_y_lower = a_lower + b_lower * (x_target[mask_lower] - x0) ** 2
+    y_target[mask_lower] = np.exp(log_y_lower)
+
+    # Above range: log-linear extension
+    log_y_upper = a_upper + b_upper * x_target[mask_upper]
+    y_target[mask_upper] = np.exp(log_y_upper)
 
     return y_target
+
+
+def interpolate_between_functions(
+    x: np.ndarray,
+    f_1: np.ndarray,
+    f_2: np.ndarray,
+    x_1: float,
+    x_2: float,
+    power: float = 1.0,
+) -> np.ndarray:
+    """
+    Piecewise interpolate between two functions defined on the same x-grid.
+
+    Regions:
+        x < x_1:       f_1
+        x_1 -> x_2:    smooth interpolation from f_1 to f_2
+        x > x_2:       f_2
+
+    Parameters
+    ----------
+    x:
+        1D sorted x-grid.
+    f_1, f_2:
+        Function values on the same grid.
+    x_1:
+        Start of transition.
+    x_2:
+        End of transition. Must be greater than x_1.
+    power:
+        Shape parameter. 1.0 gives normal smoothstep.
+        Larger values delay the transition near x_1 and steepen it later.
+
+    Returns
+    -------
+    f_out:
+        Blended function on x.
+    """
+    x = np.asarray(x, dtype=float)
+    f_1 = np.asarray(f_1, dtype=float)
+    f_2 = np.asarray(f_2, dtype=float)
+
+    if x.ndim != 1 or f_1.ndim != 1 or f_2.ndim != 1:
+        raise ValueError("x, f_1, and f_2 must be 1D arrays")
+    if len(x) != len(f_1) or len(x) != len(f_2):
+        raise ValueError("x, f_1, and f_2 must have the same length")
+    if len(x) == 0:
+        raise ValueError("arrays must not be empty")
+    if not np.all(np.isfinite(x)):
+        raise ValueError("x must contain only finite values")
+    if not np.all(np.isfinite(f_1)) or not np.all(np.isfinite(f_2)):
+        raise ValueError("f_1 and f_2 must contain only finite values")
+    if np.any(np.diff(x) < 0):
+        raise ValueError("x must be sorted in non-decreasing order")
+    if not np.isfinite(x_1) or not np.isfinite(x_2):
+        raise ValueError("x_1 and x_2 must be finite")
+    if x_2 <= x_1:
+        raise ValueError("x_2 must be greater than x_1")
+    if not np.isfinite(power) or power <= 0:
+        raise ValueError("power must be positive")
+
+    t = (x - x_1) / (x_2 - x_1)
+    t = np.clip(t, 0.0, 1.0)
+
+    # Smoothstep: 0 -> 1 with zero slope at both ends.
+    w = t * t * (3.0 - 2.0 * t)
+
+    # Optional shaping.
+    w = w**power
+
+    return (1.0 - w) * f_1 + w * f_2

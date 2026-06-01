@@ -263,8 +263,8 @@ class DCPhysicalRFFT(Transform):
     def form_factor_to_profile(
         self, form_factor: FormFactor
     ) -> Tuple[Grid, np.ndarray]:
-        mag = np.maximum(form_factor.mag, self.eps_mag)
-        F_pos = mag * np.exp(1j * form_factor.phase)
+        # mag = np.maximum(form_factor.mag, self.eps_mag)
+        F_pos = form_factor.mag * np.exp(1j * form_factor.phase)
 
         x_shift = np.fft.irfft(F_pos, n=form_factor.grid.N) / form_factor.grid.dt
         x = np.fft.fftshift(x_shift)

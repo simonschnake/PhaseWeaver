@@ -12,7 +12,7 @@ from ..state import (
 from .band_limit_box import BandLimitBox
 from .gaussian_group import GaussianGroup
 from .measurement_box import MeasurementBox
-from .option_selector_box import OptionSelectorBox
+from .option_selector_box import MultiOptionSelectorBox, OptionSelectorBox
 
 
 class ControlsPanel(QWidget):
@@ -38,25 +38,27 @@ class ControlsPanel(QWidget):
             checked=cfg.PEAK2_ENABLED,
         )
 
-        self.mag_init_box = OptionSelectorBox(
-            "Magnitude Init", enum_cls=cfg.MAG_INIT_MODE, default=cfg.MAG_INIT_DEFAULT
-        )
+        # self.mag_init_box = OptionSelectorBox(
+        #    "Magnitude Init", enum_cls=cfg.MAG_INIT_MODE, default=cfg.MAG_INIT_DEFAULT
+        # )
         self.phase_init_box = OptionSelectorBox(
             "Phase Init", enum_cls=cfg.PHASE_INIT_MODE, default=cfg.PHASE_INIT_DEFAULT
         )
 
-        self.measurement_box = MeasurementBox()
+        self.measurement_box = MultiOptionSelectorBox(
+            title="Measurements", enum_cls=cfg.MEASUREMENT_MODE
+        )
 
-        self.band_limit_box = BandLimitBox()
+        # self.band_limit_box = BandLimitBox()
 
         for widget in (
             self.background_box,
             self.spike_box,
             self.spike2_box,
-            self.measurement_box,
-            self.mag_init_box,
             self.phase_init_box,
-            self.band_limit_box,
+            self.measurement_box,
+            # self.mag_init_box,
+            # self.band_limit_box,
         ):
             widget.changed.connect(self.changed.emit)
 
@@ -67,16 +69,15 @@ class ControlsPanel(QWidget):
         peak_col.addStretch(1)
 
         recon_col = QVBoxLayout()
-        recon_col.addWidget(self.mag_init_box)
+        # recon_col.addWidget(self.mag_init_box)
         recon_col.addWidget(self.phase_init_box)
         recon_col.addWidget(self.measurement_box)
-        recon_col.addWidget(self.band_limit_box)
+        # recon_col.addWidget(self.band_limit_box)
 
         # Small Debugging Export
         self.export_button = QPushButton("Export Data")
         self.export_button.clicked.connect(self.export_requested.emit)
         recon_col.addWidget(self.export_button)
-
 
         recon_col.addStretch(1)
 
@@ -97,17 +98,24 @@ class ControlsPanel(QWidget):
         # phase_end_enabled, start_freq_hz, phase_at_300_thz = (
         # self.phase_end_box.get_values()
         #  )
-        band_limit_enabled, f_cut_hz = self.band_limit_box.get_values()
+        # band_limit_enabled, f_cut_hz = self.band_limit_box.get_values()
 
         return ReconstructionState(
-            mag_init_mode=self.mag_init_box.mode,
+            # mag_init_mode=self.mag_init_box.mode,
             phase_init_mode=self.phase_init_box.mode,
-            band_limit=band_limit_enabled,
-            band_limit_f_cut_hz=f_cut_hz,
+            # band_limit=band_limit_enabled,
+            # band_limit_f_cut_hz=f_cut_hz,
         )
 
     def get_measurement_state(self) -> MeasurementState:
-        return self.measurement_box.get_state()
+        meas_state = MeasurementState()
+        for mode in self.measurement_box.selected_modes:
+            if mode == cfg.MEASUREMENT_MODE.CRISP:
+                meas_state.crisp = True
+            if mode == cfg.MEASUREMENT_MODE.INFRARED:
+                meas_state.infrared = True
+
+        return meas_state
 
     def get_state(self) -> ControlsState:
         return ControlsState(

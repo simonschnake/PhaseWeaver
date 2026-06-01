@@ -1,6 +1,13 @@
 import numpy as np
 
-from phase_weaver.app.config import MAG_INIT_MODE, MEASUREMENT_MODE, PHASE_INIT_MODE
+from phase_weaver.app.config import (
+    MAG_INIT_MODE,
+    PHASE_INIT_MODE,
+    CRISP_MIN_HZ,
+    CRISP_MAX_HZ,
+    IR_MIN_HZ,
+    IR_MAX_HZ,
+)
 from phase_weaver.core import (
     BandLimitedDCPhysicalRFFT,
     CurrentProfile,
@@ -22,6 +29,7 @@ from phase_weaver.core.reconstruction import (
     ExponentialInitializer,
     FormFactorInitializer,
     GSMeasuredMagnitude,
+    GerchbergSaxton,
     MaxIter,
     MinimumPhaseCepstrum,
     MinIter,
@@ -40,11 +48,12 @@ class AppLogic:
     def __init__(self):
         self.phase_last: np.ndarray | None = None
         self.center_prof = CenterFirstMoment()
+        self._recon_time_constraints = CenterFirstMoment() + NormalizeArea()
 
         self._recon_time_constraints = (
-            CutAfterNthZeroFromPeak()
+            CutAfterNthZeroFromPeak(n=3)
             + NonNegativity()
-            # + NormalizeArea()
+            + NormalizeArea()
             + CenterFirstMoment()
         )
 
@@ -56,7 +65,11 @@ class AppLogic:
 
     def compute_initial(
         self, controls_state: ControlsState
-    ) -> tuple[Profile, FormFactor, MeasuredFormFactor | None]:
+    ) -> tuple[
+        Profile,
+        FormFactor,
+        MeasuredFormFactor | tuple[MeasuredFormFactor, MeasuredFormFactor] | None,
+    ]:
         transform = self._create_transform(controls_state.reconstruction)
         prof_input = self._compute_input_profile(controls_state)
         ff_input = self._compute_input_formfactor(prof_input, transform=transform)
@@ -66,7 +79,9 @@ class AppLogic:
     def compute_reconstruction(
         self,
         controls_state: ControlsState,
-        measured_ff: MeasuredFormFactor | None,
+        measured_ff: MeasuredFormFactor
+        | tuple[MeasuredFormFactor, MeasuredFormFactor]
+        | None,
         ff_input: FormFactor,
     ) -> tuple[Profile, FormFactor]:
         reconstruction = self._build_reconstruction(
@@ -83,26 +98,15 @@ class AppLogic:
     def _compute_input_profile(self, app_state: ControlsState) -> Profile:
         profile_model = ProfileModel(app_state.scenario)
         prof = profile_model.compute_profile()
-        self.center_prof.apply(prof)
+        self._recon_time_constraints.apply(prof)
         return prof
 
     def _compute_input_formfactor(
-        self,
-        prof: Profile,
-        transform: Transform,
+        self, prof: Profile, transform: Transform | None = None
     ) -> FormFactor:
         return prof.to_form_factor(transform=transform)
 
     def _create_transform(self, recon_state: ReconstructionState) -> Transform:
-        if recon_state.band_limit:
-            f_cut = float(max(recon_state.band_limit_f_cut_hz, 0.0))
-            return BandLimitedDCPhysicalRFFT(
-                f_cut=f_cut,
-                compact=False,
-                unwrap_phase=True,
-                dc_normalize=False,
-            )
-
         return DCPhysicalRFFT(
             unwrap_phase=True,
             dc_normalize=False,
@@ -111,20 +115,22 @@ class AppLogic:
     def _build_reconstruction(
         self,
         controls_state: ControlsState,
-        measured_ff: MeasuredFormFactor | None,
+        measured_ff: MeasuredFormFactor
+        | tuple[MeasuredFormFactor, MeasuredFormFactor]
+        | None,
         ff_input: FormFactor,
     ) -> ReconstructionAlgorithm:
         recon_state = controls_state.reconstruction
 
-        return GSMeasuredMagnitude(
+        return GerchbergSaxton(
             measured_ff=measured_ff,
             transform=self._create_transform(recon_state),
             formfactor_init=self._make_formfactor_init(recon_state, ff_input),
             time_constraints=self._recon_time_constraints,
             frequency_constraints=self._recon_frequency_constraints,
             # stop=self._recon_stop_condition,
-            transition_width=controls_state.measurement.overlap_width_hz,
-            overlap_power=2.0,
+            # transition_width=controls_state.measurement.overlap_width_hz,
+            # overlap_power=2.0,
         )
 
     def _make_formfactor_init(
@@ -132,20 +138,7 @@ class AppLogic:
         recon_state: ReconstructionState,
         ff_input: FormFactor,
     ):
-        mag_mode = recon_state.mag_init_mode
         phase_mode = recon_state.phase_init_mode
-
-        if mag_mode == MAG_INIT_MODE.EXP:
-            mag_init = ExponentialInitializer()
-        elif mag_mode == MAG_INIT_MODE.REAL:
-            mag_init = PredefinedMagnitude(mag=ff_input.mag)
-        elif mag_mode == MAG_INIT_MODE.MEASEXT:
-            mag_init = ExponentialExtendMeasurement()
-        elif mag_mode == MAG_INIT_MODE.CRISP:
-            print(
-                "Warning: CRISP magnitude initialization is not implemented. Falling back to exponential initialization."
-            )
-            mag_init = ExponentialInitializer()
 
         if phase_mode == PHASE_INIT_MODE.ZERO:
             phase_init = ZeroPhase()
@@ -162,51 +155,40 @@ class AppLogic:
             )
             phase_init = PredefinedPhase(phase=ff_input.phase)
 
-        return FormFactorInitializer(mag_init=mag_init, phase_init=phase_init)
+        return FormFactorInitializer(phase_init=phase_init)
 
     def _make_measurement_mask(
-        self,
-        measurement_state: MeasurementState,
-        ff_true: FormFactor,
+        self, form_factor: FormFactor, f_min_hz: float, f_max_hz: float
     ) -> np.ndarray:
-        freq = ff_true.grid.f_pos
-        mode = measurement_state.mode
-
-        if mode == MEASUREMENT_MODE.FULL:
-            return np.ones_like(freq, dtype=bool)
-
-        if mode == MEASUREMENT_MODE.BELOW_CUT:
-            f_cut = float(max(measurement_state.f_max_hz, 0.0))
-            return freq <= f_cut
-
-        if mode == MEASUREMENT_MODE.BETWEEN:
-            f_min = float(max(measurement_state.f_min_hz, 0.0))
-            f_max = float(max(measurement_state.f_max_hz, f_min))
-            return (freq >= f_min) & (freq <= f_max)
-
-        raise ValueError(f"Unknown measurement mode: {mode}")
+        freq = form_factor.grid.f_pos
+        return (freq >= f_min_hz) & (freq <= f_max_hz)
 
     def _make_measured_formfactor(
         self,
         controls_state: ControlsState,
         ff_input: FormFactor,
-    ) -> MeasuredFormFactor | None:
-        if controls_state.measurement.mode == "full":
-            return None
-        mask = self._make_measurement_mask(controls_state.measurement, ff_input)
+    ) -> MeasuredFormFactor | tuple[MeasuredFormFactor, MeasuredFormFactor] | None:
+        res: (
+            MeasuredFormFactor | tuple[MeasuredFormFactor, MeasuredFormFactor] | None
+        ) = None
+        if controls_state.measurement.crisp:
+            mask = self._make_measurement_mask(ff_input, CRISP_MIN_HZ, CRISP_MAX_HZ)
+            res = MeasuredFormFactor(
+                freq=ff_input.grid.f_pos[mask],
+                mag=ff_input.mag[mask] * controls_state.measurement.crisp_scale,
+            )
+        if controls_state.measurement.infrared:
+            mask = self._make_measurement_mask(ff_input, IR_MIN_HZ, IR_MAX_HZ)
+            ir_meas = MeasuredFormFactor(
+                freq=ff_input.grid.f_pos[mask],
+                mag=ff_input.mag[mask] * controls_state.measurement.infrared_scale,
+            )
+            if res is None:
+                res = ir_meas
+            else:
+                res = (res, ir_meas)
 
-        if not np.any(mask):
-            print("Warning: Measurement mask is empty. No measurements will be made.")
-            return None
-
-        scale = controls_state.measurement.scale
-        if scale is None:
-            scale = 1.0
-
-        return MeasuredFormFactor(
-            freq=ff_input.grid.f_pos[mask],
-            mag=ff_input.mag[mask] * scale,
-        )
+        return res
 
     def export_npz(
         self,
