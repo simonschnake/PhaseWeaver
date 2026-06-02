@@ -45,17 +45,21 @@ class MainWindow(QMainWindow):
 
     def redraw_input(self) -> None:
         state = self.controls_panel.get_state()
-        prof_input, ff_input, _ = self.logic.compute_initial(controls_state=state)
+        prof_input = self.logic.compute_input_profile(state)
+        ff_input = self.logic.compute_input_formfactor(prof_input)
         self.plot_panel.render_input(prof_input, ff_input)
 
     def redraw_reconstruction(self) -> None:
         state = self.controls_panel.get_state()
-        prof_input, ff_input, measurement = self.logic.compute_initial(
-            controls_state=state
+        prof_input = self.logic.compute_input_profile(state)
+        ff_input = self.logic.compute_input_formfactor(prof_input)
+        measurements = self.logic.compute_measured_formfactor(
+            ff_input, state.measurement
         )
         prof_recon, ff_recon = self.logic.compute_reconstruction(
+            grid=ff_input.grid,
+            measurements=measurements,
             controls_state=state,
-            measured_ff=measurement,
             ff_input=ff_input,
         )
         prof_recon.charge = prof_input.charge

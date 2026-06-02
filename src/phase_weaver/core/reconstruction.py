@@ -1,7 +1,5 @@
 from __future__ import annotations
-
 from abc import ABC, abstractmethod
-from cmath import phase
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -11,17 +9,15 @@ from .base import (
     FormFactor,
     Grid,
     Profile,
-    Transform,
 )
 from .constraints import (
     CenterFirstMoment,
     ClampMagnitude,
+    CutAfterNthZeroFromPeak,
     EnforceDCOne,
-    FrequencyConstraint,
     NonNegativity,
-    TimeConstraint,
-    BlendMeasuredMagnitude,
     NormalizeArea,
+    BlendMeasuredMagnitude,
 )
 
 from .measurement import MeasuredFormFactor
@@ -30,239 +26,37 @@ from .measurement import MeasuredFormFactor
 # from .utils import quadratic_log_extend
 from .utils import gaussian_extend, interpolate_between_functions
 
-
-# =============================================================================
-# Formfactor initialization
-# =============================================================================
-#
-class PhaseInitializer(ABC):
-    """Given a Grid, return an initial phase"""
-
-    name: str
-
-    @abstractmethod
-    def __call__(self, grid: Grid, **kwargs) -> np.ndarray: ...
+from phase_weaver.app.state import (
+    ReconstructionState,
+    PHASE_INIT_MODE,
+)
 
 
-class MagnitudeInitializer(ABC):
-    """Given a Grid, return an initial magnitude"""
+def minimum_phase_from_mag(
+    grid: Grid, mag: np.ndarray, eps: float = np.finfo(float).eps
+) -> np.ndarray:
+    N = grid.N
+    expected = (N // 2 + 1,)
+    if mag.shape != expected:
+        raise ValueError(f"mag_pos must have shape {expected}, got {mag.shape}")
 
-    name: str
+    logmag_pos = np.log(np.maximum(mag, eps))
 
-    @abstractmethod
-    def __call__(self, grid: Grid, **kwargs) -> np.ndarray: ...
+    logmag_full = np.empty(N, dtype=float)
+    logmag_full[: N // 2 + 1] = logmag_pos
+    # mirror interior for even-N rfft symmetry
+    logmag_full[N // 2 + 1 :] = logmag_pos[1:-1][::-1]
 
+    c = np.fft.ifft(logmag_full).real
 
-class ZeroPhase(PhaseInitializer):
-    name: str = "zero_phase"
+    cmin = np.zeros_like(c)
+    cmin[0] = c[0]
+    cmin[1 : N // 2] = 2.0 * c[1 : N // 2]
+    cmin[N // 2] = c[N // 2]  # Nyquist term for even N
 
-    def __call__(self, grid: Grid, **kwargs) -> np.ndarray:
-        return np.zeros_like(grid.f_pos, dtype=float)
-
-
-class RandomPhase(PhaseInitializer):
-    name: str = "random"
-
-    def __call__(self, grid: Grid, **kwargs) -> np.ndarray:
-        rng = np.random.default_rng(kwargs.get("seed", None))
-        return np.unwrap(rng.uniform(0.0, 2.0 * np.pi, size=grid.f_pos.shape))
-
-
-class MinimumPhaseCepstrum(PhaseInitializer):
-    """
-    Minimum-phase estimate from magnitude using real cepstrum.
-
-    Returns unwrapped phase for bins [0..Nyquist], length N/2+1.
-    """
-
-    name: str = "minphase"
-
-    def __call__(self, grid: Grid, **kwargs) -> np.ndarray:
-        mag_pos = kwargs.get("mag", None)
-        if mag_pos is None:
-            raise ValueError("MinimumPhaseCepstrum requires 'mag' keyword argument")
-        eps_mag = kwargs.get("eps_mag", np.finfo(float).eps)
-
-        mag_pos = np.asarray(mag_pos, dtype=float)
-        N = grid.N
-        expected = (N // 2 + 1,)
-        if mag_pos.shape != expected:
-            raise ValueError(f"mag_pos must have shape {expected}, got {mag_pos.shape}")
-
-        logmag_pos = np.log(np.maximum(mag_pos, eps_mag))
-
-        logmag_full = np.empty(N, dtype=float)
-        logmag_full[: N // 2 + 1] = logmag_pos
-        # mirror interior for even-N rfft symmetry
-        logmag_full[N // 2 + 1 :] = logmag_pos[1:-1][::-1]
-
-        c = np.fft.ifft(logmag_full).real
-
-        cmin = np.zeros_like(c)
-        cmin[0] = c[0]
-        cmin[1 : N // 2] = 2.0 * c[1 : N // 2]
-        cmin[N // 2] = c[N // 2]  # Nyquist term for even N
-
-        spec = np.exp(np.fft.fft(cmin))
-        phase = np.angle(spec[: N // 2 + 1])
-        return np.unwrap(phase)
-
-
-class PredefinedPhase(PhaseInitializer):
-    """
-    Use a predefined phase array, ignoring the input magnitude.
-    """
-
-    def __init__(self, phase: np.ndarray, **kwargs):
-        self.phase = np.asarray(phase, dtype=float)
-        self.name = "predefined"
-
-    def __call__(self, grid: Grid, **kwargs) -> np.ndarray:
-        expected = (grid.N // 2 + 1,)
-        if self.phase.shape != expected:
-            raise ValueError(
-                f"predefined phase must have shape {expected}, got {self.phase.shape}"
-            )
-        return np.unwrap(self.phase)
-
-
-class ExponentialInitializer(MagnitudeInitializer):
-    """
-    Return the Magnitude corresponding to an exponential decay in time.
-
-    The frequency-domain function is
-
-        m(f) = exp(-2*(pi * tau * f) ** 2)
-
-    where:
-        - f is frequency in Hz
-        - tau is the decay time constant in seconds
-    """
-
-    name: str = "exponential"
-
-    def __call__(self, grid: Grid, tau: float = 10e-12, **kwargs) -> np.ndarray:
-        if tau <= 0:
-            raise ValueError(f"tau must be positive, got {tau}")
-        return np.exp(-2 * (np.pi * tau * grid.f_pos) ** 2)
-
-
-@dataclass(slots=True)
-class FormFactorInitializer(ABC):
-    """Given a Grid, return an initial FormFactor with mag+phase for bins [0..Nyquist]."""
-
-    mag_init: MagnitudeInitializer = field(default_factory=ExponentialInitializer)
-    phase_init: PhaseInitializer = field(default_factory=ZeroPhase)
-
-    def __call__(
-        self, grid: Grid, mag: np.ndarray | None = None, **kwargs
-    ) -> FormFactor:
-        mag = self.mag_init(grid, mag=mag, **kwargs)
-        phase = self.phase_init(grid, mag=mag, **kwargs)
-
-        return FormFactor(
-            grid=grid,
-            mag=mag,
-            phase=phase,
-            eps=kwargs.get("eps", np.finfo(float).eps),
-        )
-
-
-class ExponentialExtendMeasurement(MagnitudeInitializer):
-    name: str = "exponential_extend_measurement"
-
-    def __call__(
-        self,
-        grid: Grid,
-        measured_ff: MeasuredFormFactor | None = None,
-        power: float = 4,
-        **kwargs,
-    ) -> np.ndarray:
-        if measured_ff is None:
-            raise ValueError(
-                "ExponentialExtendMeasurement requires 'measurement_ff' keyword argument of type MeasuredFormFactor"
-            )
-
-        return gaussian_extend(grid.f_pos, measured_ff.freq, measured_ff.mag)
-
-        # return exponential_extend(
-        # grid.f_pos,
-        # measured_ff.freq,
-        # measured_ff.mag,
-        #    power=power,
-        # )
-
-
-class RealMagnitude(MagnitudeInitializer):
-    def __call__(
-        self, grid: Grid, mag: np.ndarray | None = None, **kwargs
-    ) -> np.ndarray:
-        if mag is None:
-            raise ValueError(
-                "RealMagnitude requires 'mag' keyword argument of type np.ndarray"
-            )
-        return mag
-
-
-class PredefinedMagnitude(MagnitudeInitializer):
-    """
-    Use a predefined magnitude array, ignoring the input magnitude.
-    """
-
-    def __init__(self, mag: np.ndarray, **kwargs):
-        self.mag = np.asarray(mag, dtype=float)
-        self.name = "predefined"
-
-    def __call__(self, grid: Grid, **kwargs) -> np.ndarray:
-        expected = (grid.N // 2 + 1,)
-        if self.mag.shape != expected:
-            raise ValueError(
-                f"predefined magnitude must have shape {expected}, got {self.mag.shape}"
-            )
-        return self.mag
-
-
-@dataclass(slots=True)
-class CombineMeasuredMagnitudes(MagnitudeInitializer):
-    """
-    Combine both measured magnitudes:
-    - extend both magnitudes smoothly
-    - scale the higher freq magnitude so that the smooth extention match in the middle
-    - smooth interpolate between both magnitude measurements
-    """
-
-    def __call__(
-        self,
-        grid: Grid,
-        measured_ff: tuple[MeasuredFormFactor, MeasuredFormFactor],
-        power=4,
-        **kwargs,
-    ) -> np.ndarray:
-        if measured_ff is None or isinstance(measured_ff, MeasuredFormFactor):
-            raise ValueError(
-                "require measured_ff is instance of (MeasuredFormFactor, MeasuredFormFactor)"
-            )
-
-        mag_crisp, mag_ir = measured_ff
-
-        if mag_crisp.freq[0] > mag_ir.freq[0]:
-            mag_crisp, mag_ir = mag_ir, mag_crisp
-
-        mag_crisp_ext = gaussian_extend(grid.f_pos, mag_crisp.freq, mag_crisp.mag)
-        mag_ir_ext = gaussian_extend(grid.f_pos, mag_ir.freq, mag_ir.mag)
-
-        crisp_end = mag_crisp.freq[-1]
-        ir_start = mag_ir.freq[0]
-
-        combine_point = (crisp_end + ir_start) / 2
-
-        scale_idx = np.searchsorted(grid.f_pos, combine_point, side="left")
-
-        mag_ir_ext = mag_ir_ext * mag_crisp_ext[scale_idx] / mag_ir_ext[scale_idx]
-
-        return interpolate_between_functions(
-            grid.f_pos, mag_crisp_ext, mag_ir_ext, crisp_end, combine_point
-        )
+    spec = np.exp(np.fft.fft(cmin))
+    phase = np.angle(spec[: N // 2 + 1])
+    return np.unwrap(phase)
 
 
 # =============================================================================
@@ -429,8 +223,8 @@ class PhaseStoppedChanging(StopCriterion):
 
 
 @dataclass(slots=True)
-class MeasurementStoppedChanging(StopCriterion):
-    measured_ff: MeasuredFormFactor | tuple[MeasuredFormFactor, MeasuredFormFactor]
+class MeasurementsStoppedChanging(StopCriterion):
+    measured_ff: tuple[MeasuredFormFactor, ...]
     tol: float = 1e-6
     patience: int = 3
     name: str = "measurement_distance_below"
@@ -459,38 +253,20 @@ class MeasurementStoppedChanging(StopCriterion):
         if ff is None:
             return
 
-        if isinstance(self.measured_ff, MeasuredFormFactor):
-            mag_interp = np.interp(
-                self.measured_ff.freq,
-                ff.grid.f_pos,
-                ff.mag,
-            )
-            denom = max(np.linalg.norm(self.measured_ff.mag), np.finfo(float).eps)
-            self._err = float(np.linalg.norm(mag_interp - self.measured_ff.mag) / denom)
-        elif (
-            isinstance(self.measured_ff, tuple)
-            and len(self.measured_ff) == 2
-            and all(isinstance(obj, MeasuredFormFactor) for obj in self.measured_ff)
-        ):
-            measured_ff = self.measured_ff[0]
-            mag_interp = np.interp(
-                measured_ff.freq,
-                ff.grid.f_pos,
-                ff.mag,
-            )
-            denom = max(np.linalg.norm(measured_ff.mag), np.finfo(float).eps)
-            err0 = float(np.linalg.norm(mag_interp - measured_ff.mag) / denom)
+        err = np.empty(len(self.measured_ff), dtype=float)
 
-            measured_ff = self.measured_ff[1]
+        for i, meas in enumerate(self.measured_ff):
             mag_interp = np.interp(
-                measured_ff.freq,
+                meas.freq,
                 ff.grid.f_pos,
                 ff.mag,
             )
-            denom = max(np.linalg.norm(measured_ff.mag), np.finfo(float).eps)
-            err1 = float(np.linalg.norm(mag_interp - measured_ff.mag) / denom)
+            denom = max(np.linalg.norm(meas.mag), np.finfo(float).eps)
+            self._err = float(np.linalg.norm(mag_interp - meas.mag) / denom)
+            denom = max(np.linalg.norm(meas.mag), np.finfo(float).eps)
+            err[i] = float(np.linalg.norm(mag_interp - meas.mag) / denom)
 
-            self._err = np.sqrt(err0**2 + err1**2)
+        self._err = float(np.sqrt(np.mean(err**2)))
 
 
 # =============================================================================
@@ -506,181 +282,12 @@ class ReconstructionAlgorithm(ABC):
     name: str
 
     @abstractmethod
-    def run(self, grid: Grid, **kwargs) -> tuple[Profile, FormFactor]: ...
+    def run(self) -> tuple[Profile, FormFactor]: ...
 
 
 # =============================================================================
 # Gerchberg–Saxton style: magnitude-only -> phase retrieval
 # =============================================================================
-
-
-@dataclass(slots=True)
-class GSMagnitudeOnly(ReconstructionAlgorithm):
-    """
-    GS-style algorithm that:
-      1) estimates an initial phase from magnitude
-      2) repeatedly:
-         - inverse transform to time
-         - apply time constraints
-         - forward transform to frequency
-         - replace magnitude with measured magnitude
-      3) returns final profile + phases/metrics
-
-    This reproduces the behavior of your current `reconstruct_current_from_mag`.
-    """
-
-    name: str = "gs_magnitude_only"
-
-    transform: Transform = DCPhysicalRFFT(unwrap_phase=True, dc_normalize=False)
-    phase_init: PhaseInitializer = MinimumPhaseCepstrum()
-    time_constraints: TimeConstraint = (
-        NonNegativity() + NormalizeArea() + CenterFirstMoment()
-    )
-
-    frequency_constraints: FrequencyConstraint = ClampMagnitude() + EnforceDCOne()
-
-    stop: StopCriterion = (
-        MaxIter(1_000) + PhaseStoppedChanging(tol=1e-8, patience=5) + MinIter(10)
-    )
-
-    eps_mag: float = np.finfo(float).eps
-
-    def run(
-        self,
-        grid: Grid,
-        **kwargs,
-    ) -> tuple[Profile, FormFactor]:
-        mag = kwargs.get("mag", None)
-        if mag is None or type(mag) is not np.ndarray:
-            raise ValueError(
-                "GSMagnitudeOnly requires 'mag' keyword argument of type np.ndarray"
-            )
-
-        if grid is None or type(grid) is not Grid:
-            raise ValueError(
-                "GSMagnitudeOnly requires 'grid' keyword argument of type Grid"
-            )
-
-        expected = (grid.N // 2 + 1,)
-        if mag.shape != expected:
-            raise ValueError(f"mag must have shape {expected}, got {mag.shape}")
-
-        # Prepare measurement magnitude (clamp + DC normalize etc.) WITHOUT mutating input
-        ff0 = FormFactor(grid=grid, mag=mag.copy(), phase=np.zeros_like(mag))
-        self.frequency_constraints.apply(ff0)
-        mag_meas = ff0.mag.copy()
-
-        # init phase from processed magnitude
-        phase = self.phase_init.__call__(grid, mag=mag_meas)
-
-        # initial complex FF: measured magnitude + init phase
-        ff = FormFactor(grid=grid, mag=mag_meas.copy(), phase=phase, eps=self.eps_mag)
-
-        # initial time profile + constraints
-        prof = Profile.from_form_factor(ff, transform=self.transform)
-        self.time_constraints.apply(prof)
-
-        self.stop.reset()
-
-        while not self.stop():
-            ff = prof.to_form_factor(self.transform)
-            ff.mag = mag_meas.copy()
-            self.frequency_constraints.apply(ff)
-
-            prof = ff.to_profile(transform=self.transform)
-            self.time_constraints.apply(prof)
-
-            self.stop.update(prof=prof, ff=ff)
-
-        return prof, ff
-
-
-@dataclass(slots=True)
-class GSMeasuredMagnitude(ReconstructionAlgorithm):
-    """
-    GS-style algorithm for partially measured magnitude:
-      1) initialize full-grid form factor from a FormFactorInitializer
-         (default: GaussianInitializer)
-      2) smoothly blend the measured magnitude into that initial form factor
-      3) repeatedly:
-         - inverse transform to time
-         - apply time constraints
-         - forward transform to frequency
-         - smoothly blend measured magnitude into current iterate
-      4) stop when all stop criteria are satisfied
-    """
-
-    measured_ff: (
-        MeasuredFormFactor | tuple[MeasuredFormFactor, MeasuredFormFactor] | None
-    ) = None
-    name: str = "gs_measured_magnitude"
-    transform: Transform = field(
-        default_factory=lambda: DCPhysicalRFFT(unwrap_phase=True, dc_normalize=False)
-    )
-    formfactor_init: FormFactorInitializer = field(
-        default_factory=FormFactorInitializer
-    )
-    time_constraints: TimeConstraint = field(
-        default_factory=lambda: NonNegativity() + NormalizeArea() + CenterFirstMoment()
-    )
-    frequency_constraints: FrequencyConstraint = field(
-        default_factory=lambda: ClampMagnitude() + EnforceDCOne()
-    )
-    stop: StopCriterion = field(
-        default_factory=lambda: (
-            MaxIter(1_000) + PhaseStoppedChanging(tol=1e-8, patience=5) + MinIter(10)
-        )
-    )
-    transition_width: float | None = None
-    overlap_power: float = 2.0
-    eps_mag: float = np.finfo(float).eps
-
-    def __post_init__(self) -> None:
-        if self.measured_ff is None:
-            self.formfactor_init = FormFactorInitializer(
-                mag_init=RealMagnitude(), phase_init=self.formfactor_init.phase_init
-            )
-        else:
-            self.frequency_constraints = (
-                BlendMeasuredMagnitude(
-                    measured=self.measured_ff,
-                    power=self.overlap_power,
-                    transition_width=self.transition_width,
-                )
-                + self.frequency_constraints
-            )
-            self.stop = self.stop + MeasurementStoppedChanging(
-                self.measured_ff, tol=1e-4, patience=3
-            )
-
-    def run(
-        self,
-        grid: Grid,
-        mag: np.ndarray | None = None,
-        measured_ff: MeasuredFormFactor | None = None,
-        **kwargs,
-    ) -> tuple[Profile, FormFactor]:
-
-        # 1) initial full-grid form factor from initializer
-        ff = self.formfactor_init(grid, mag=mag, measured_ff=self.measured_ff)
-        self.frequency_constraints.apply(ff)
-
-        self.stop.reset()
-
-        prof = ff.to_profile(transform=self.transform)
-        self.time_constraints.apply(prof)
-
-        while not self.stop():
-            # back to time domain
-            prof = ff.to_profile(transform=self.transform)
-            self.time_constraints.apply(prof)
-
-            ff = prof.to_form_factor(self.transform)
-            self.frequency_constraints.apply(ff)
-
-            self.stop.update(prof=prof, ff=ff)
-
-        return prof, ff
 
 
 class GerchbergSaxton(ReconstructionAlgorithm):
@@ -690,90 +297,55 @@ class GerchbergSaxton(ReconstructionAlgorithm):
 
     def __init__(
         self,
-        measured_ff: MeasuredFormFactor
-        | tuple[MeasuredFormFactor, MeasuredFormFactor]
-        | None = None,
-        transform: Transform | None = None,
-        formfactor_init: FormFactorInitializer | None = None,
-        time_constraints: TimeConstraint | None = None,
-        frequency_constraints: FrequencyConstraint | None = None,
-        stop: StopCriterion | None = None,
-        transition_width: float | None = None,
-        overlap_power: float = 2.0,
-        eps_mag: float = np.finfo(float).eps,
+        grid: Grid,
+        measurements: tuple[MeasuredFormFactor, ...],
+        reconstruction_state: ReconstructionState,
+        formfactor_input: FormFactor | None = None,
+        phase_last: np.ndarray | None = None,
     ):
-        self.measured_ff = measured_ff
 
-        self.transform = (
-            DCPhysicalRFFT(unwrap_phase=True, dc_normalize=False)
-            if transform is None
-            else transform
+        self.grid = grid
+        self.measurements = measurements
+        self.reconstruction_state = reconstruction_state
+        self.formfactor_input = formfactor_input
+
+        self.transform = DCPhysicalRFFT(
+            unwrap_phase=True,
+            dc_normalize=False,
         )
-        self.formfactor_init = (
-            FormFactorInitializer(RealMagnitude(), ZeroPhase())
-            if formfactor_init is None
-            else formfactor_init
+
+        self.formfactor_init = self._calculate_init_formfactor(
+            grid,
+            measurements,
+            reconstruction_state,
+            formfactor_input=formfactor_input,
+            phase_last=phase_last,
         )
+
         self.time_constraints = (
-            (NonNegativity() + NormalizeArea() + CenterFirstMoment())
-            if time_constraints is None
-            else time_constraints
+            CutAfterNthZeroFromPeak(n=3)
+            + NonNegativity()
+            + NormalizeArea()
+            + CenterFirstMoment()
         )
+
         self.frequency_constraints = (
-            (ClampMagnitude() + EnforceDCOne())
-            if frequency_constraints is None
-            else frequency_constraints
+            ClampMagnitude()
+            + EnforceDCOne()
+            + BlendMeasuredMagnitude(measurements, scale=True)
         )
         self.stop = (
-            (
-                MaxIter(n_iter=1_000)
-                + PhaseStoppedChanging(tol=1e-8)
-                + MinIter(n_iter=10)
+            MaxIter(n_iter=1_000)
+            + PhaseStoppedChanging(tol=1e-8, patience=5)
+            + MinIter(n_iter=10)
+            + MeasurementsStoppedChanging(
+                measured_ff=measurements, tol=1e-4, patience=3
             )
-            if stop is None
-            else stop
         )
-        self.transition_width = transition_width
-        self.overlap_power = overlap_power
-        self.eps_mag = eps_mag
 
-        if measured_ff is not None:
-            self.frequency_constraints = (
-                BlendMeasuredMagnitude(
-                    measured=measured_ff,
-                    power=overlap_power,
-                    transition_width=transition_width,
-                    scale=True,
-                )
-                + self.frequency_constraints
-            )
-            self.stop = self.stop + MeasurementStoppedChanging(
-                measured_ff, tol=1e-4, patience=3
-            )
+    def run(self) -> tuple[Profile, FormFactor]:
 
-        if isinstance(measured_ff, MeasuredFormFactor):
-            self.formfactor_init.mag_init = ExponentialExtendMeasurement()
-
-        elif (
-            isinstance(measured_ff, tuple)
-            and len(measured_ff) == 2
-            and all(isinstance(mff, MeasuredFormFactor) for mff in measured_ff)
-        ):
-            self.formfactor_init = FormFactorInitializer(
-                mag_init=CombineMeasuredMagnitudes(),
-                phase_init=self.formfactor_init.phase_init,
-            )
-
-    def run(
-        self,
-        grid: Grid,
-        mag: np.ndarray | None = None,
-        measured_ff: MeasuredFormFactor | None = None,
-        **kwargs,
-    ) -> tuple[Profile, FormFactor]:
-
-        # 1) initial full-grid form factor from initializer
-        ff = self.formfactor_init(grid, mag=mag, measured_ff=self.measured_ff)
+        ff = self.formfactor_init
         self.frequency_constraints.apply(ff)
 
         self.stop.reset()
@@ -792,3 +364,61 @@ class GerchbergSaxton(ReconstructionAlgorithm):
             self.stop.update(prof=prof, ff=ff)
 
         return prof, ff
+
+    def _calculate_init_formfactor(
+        self,
+        grid: Grid,
+        measurements: tuple[MeasuredFormFactor, ...],
+        reconstruction_state: ReconstructionState,
+        formfactor_input: FormFactor | None = None,
+        phase_last: np.ndarray | None = None,
+    ) -> FormFactor:
+
+        mag_init = gaussian_extend(
+            grid.f_pos, measurements[0].freq, measurements[0].mag
+        )
+        freq_left = measurements[0].freq[0]
+
+        for meas in measurements[1:]:
+            freq_right = meas.freq[0]
+            if freq_right < freq_left:
+                freq_left, freq_right = freq_right, freq_left
+
+            mag_init = interpolate_between_functions(
+                grid.f_pos,
+                mag_init,
+                gaussian_extend(grid.f_pos, meas.freq, meas.mag),
+                freq_left,
+                freq_right,
+            )
+
+        formfactor_init = FormFactor(
+            grid=grid,
+            mag=mag_init,
+            phase=np.zeros_like(mag_init),
+        )
+
+        phase_init_mode = reconstruction_state.phase_init_mode
+
+        if phase_init_mode == PHASE_INIT_MODE.ZERO:
+            # default case
+            pass
+
+        elif phase_init_mode == PHASE_INIT_MODE.REAL:
+            if formfactor_input is None:
+                print("Input form factor is required for REAL phase initialization")
+            else:
+                formfactor_init.phase[:] = formfactor_input.phase
+
+        elif phase_init_mode == PHASE_INIT_MODE.MINPHASE:
+            formfactor_init.phase = minimum_phase_from_mag(grid, mag_init)
+
+        elif phase_init_mode == PHASE_INIT_MODE.LAST:
+            if self._phase_last is not None:
+                formfactor_init.phase[:] = phase_last
+            else:
+                print(
+                    "Warning: no previous phase found for LAST initialization, falling back to Zero Phase"
+                )
+
+        return formfactor_init

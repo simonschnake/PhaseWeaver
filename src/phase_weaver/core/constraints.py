@@ -211,7 +211,7 @@ class ReplacePhaseEndLinearSmooth(FrequencyConstraint):
 
 class BlendMeasuredMagnitude(FrequencyConstraint):
     """
-    Smoothly blend a measured magnitude into ff.mag.
+    Smoothly blend a measured magnitudes into ff.mag.
 
     Parameters
     ----------
@@ -226,9 +226,7 @@ class BlendMeasuredMagnitude(FrequencyConstraint):
 
     def __init__(
         self,
-        measured: MeasuredFormFactor
-        | tuple[MeasuredFormFactor, MeasuredFormFactor]
-        | None,
+        measured: tuple[MeasuredFormFactor, ...],
         power: float = 2.0,
         transition_width: float | None = None,
         scale: bool = False,
@@ -249,69 +247,28 @@ class BlendMeasuredMagnitude(FrequencyConstraint):
 
         self.scale = scale
         if scale:
-            if self.measured is None:
-                self._avg_measured_mag = 1.0
-            elif isinstance(self.measured, MeasuredFormFactor):
-                self._avg_measured_mag = self.measured.mag.mean()
-            elif len(self.measured) == 2 and all(
-                isinstance(mes, MeasuredFormFactor) for mes in self.measured
-            ):
-                self._avg_measured_mag = [mes.mag.mean() for mes in self.measured]
-            else:
-                raise ValueError(
-                    "measured must be MeasuredFormFactor or (MeasuredFormFactor, MeasuredFormFactor)"
-                )
+            self._avg_measured_mag = [mes.mag.mean() for mes in self.measured]
 
     def apply(self, ff: "FormFactor") -> None:
-        if self.measured is None:
-            return
-        if isinstance(self.measured, MeasuredFormFactor):
+        for i, meas in enumerate(self.measured):
             if self.scale:
                 current_mag_at_measured_freq = np.interp(
-                    self.measured.freq,
+                    meas.freq,
                     ff.grid.f_pos,
                     ff.mag,
                 )
                 avg_current_mag = current_mag_at_measured_freq.mean()
 
             else:
-                avg_current_mag = self._avg_measured_mag
+                avg_current_mag = self._avg_measured_mag[i]
 
             ff.mag = smooth_overlap(
                 x_target=ff.grid.f_pos,
-                y_target=ff.mag * avg_current_mag / self._avg_measured_mag,
-                x_source=self.measured.freq,
-                y_source=self.measured.mag,
+                y_target=ff.mag,
+                x_source=meas.freq,
+                y_source=meas.mag * avg_current_mag / self._avg_measured_mag[i],
                 power=self.power,
                 transition_width=self.transition_width,
-            )
-
-        elif len(self.measured) == 2 and all(
-            isinstance(mes, MeasuredFormFactor) for mes in self.measured
-        ):
-            for i, meas in enumerate(self.measured):
-                if self.scale:
-                    current_mag_at_measured_freq = np.interp(
-                        meas.freq,
-                        ff.grid.f_pos,
-                        ff.mag,
-                    )
-                    avg_current_mag = current_mag_at_measured_freq.mean()
-
-                else:
-                    avg_current_mag = self._avg_measured_mag[i]
-
-                ff.mag = smooth_overlap(
-                    x_target=ff.grid.f_pos,
-                    y_target=ff.mag * avg_current_mag / self._avg_measured_mag[i],
-                    x_source=meas.freq,
-                    y_source=meas.mag,
-                    power=self.power,
-                    transition_width=self.transition_width,
-                )
-        else:
-            raise ValueError(
-                "measured must be MeasuredFormFactor or (MeasuredFormFactor, MeasuredFormFactor)"
             )
 
 
