@@ -62,6 +62,7 @@ Desktop.ini
 
 # --- Matplotlib runtime cache ---
 .matplotlib/
+.tmp-mpl/
 
 # --- Local outputs (exports / screenshots) ---
 *.png
