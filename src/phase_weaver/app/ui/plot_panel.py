@@ -77,6 +77,9 @@ class PlotPanel(QWidget):
 
         self._render_time()
         self._render_spectrum()
+        self._apply_time_axes()
+        self._apply_spectrum_axes()
+        self._render_fwhm()
         self._apply_line_visibility()
         self.canvas.draw_idle()
 
@@ -110,6 +113,8 @@ class PlotPanel(QWidget):
         if self.time_model is not None and self.spectrum_model is not None:
             self._render_time()
             self._render_spectrum()
+            self._apply_time_axes()
+            self._apply_spectrum_axes()
             self._render_fwhm()
             self._apply_line_visibility()
             self.canvas.draw_idle()
