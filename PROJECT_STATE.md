@@ -6,17 +6,48 @@ Last updated: 2026-06-15
 
 PhaseWeaver is currently a small Python/PySide6 scientific workbench for exploring current-profile reconstruction from form-factor magnitude data. The app can generate a configurable time-domain current profile, compute its spectrum magnitude and phase, simulate partial measurements, and run a Gerchberg-Saxton-style magnitude-only reconstruction.
 
-The project is functional enough that the full pytest suite passes and the Qt main window can be constructed in an offscreen smoke test. The last-phase reconstruction bug has been fixed. What remains is mostly refactor fallout: stale scripts, an unfinished measurement-control path, and lint/type errors in the broader workspace.
+The project is functional enough that the full pytest suite passes and the Qt main window can be constructed in an offscreen smoke test. The last-phase reconstruction bug has been fixed, and the first experiment-use workflow is now in place: load real `.npz` measurement bundles, compare them against the super-Gaussian model `|F|`, run GS deliberately from a button, inspect a compact reconstruction summary, and export through a save dialog.
 
-The next work should focus on stabilizing the refactor before adding more physics or UI features.
+The next work should focus on validating this workflow with real experiment files, then tightening the remaining stale UI and static-tool drift.
+
+## Operational Readiness
+
+If the goal is to use PhaseWeaver for experiment operation in the next week, the important path is now:
+
+1. Load real measurement bundles.
+   - Supported input is one `.npz` file.
+   - Single-measurement schema: `freq_hz`, `mag`, optional `label`.
+   - Multi-measurement schema: `freq_hz_0`, `mag_0`, `label_0`, `freq_hz_1`, `mag_1`, `label_1`, etc.
+   - Frequencies are in Hz; magnitudes are dimensionless `|F|`.
+
+2. Run reconstruction deliberately.
+   - Parameter changes redraw the input/model only.
+   - GS runs only when the operator presses `Run Reconstruction`.
+   - Loaded measurements override simulated CRISP/IR measurements; simulated measurements remain as a demo fallback.
+
+3. Compare model, measurements, and reconstruction.
+   - The super-Gaussian model `|F|` stays visible.
+   - Loaded measurements render as spectrum markers.
+   - Reconstructed `|F|` and phase render after a successful reconstruction run.
+
+4. Export reproducibly.
+   - Export uses a save dialog instead of always overwriting `export.npz`.
+   - The `.npz` export includes plot arrays, loaded measurement arrays/labels, profile parameters, phase init mode, and reconstruction summary fields.
+
+5. Use the bottom reconstruction overview.
+   - The GUI shows measurement source, measurement count, reconstruction state, iterations, stop reason, and final measurement error.
+
+6. Keep the UI responsive enough.
+   - The current synchronous reconstruction is acceptable for now if it stays fast.
+   - If experiment-sized data makes the window stall, move reconstruction off the UI thread next.
 
 ## Current Repository Snapshot
 
 - Branch: `main`
 - Tracking: `origin/main`
-- Latest commit: `1e5ff15 small rewrite of algo`
+- Latest commit: `cce0b3c fix last phase init and refresh state`
 - Worktree state: dirty
-- Package version: `0.3.0`
+- Package version: `0.4.0`
 - Python package layout: `src/phase_weaver`
 - Main executable: `phase_weaver = phase_weaver.app:main`
 - Main app entrypoint: `src/phase_weaver/app/main.py`
@@ -65,10 +96,12 @@ The reconstruction path currently works like this:
 1. UI state is collected in `ControlsState`.
 2. `AppLogic.compute_input_profile()` builds a `CurrentProfile`.
 3. `Profile.to_form_factor()` computes the reference form factor.
-4. `AppLogic.compute_measured_formfactor()` optionally slices the spectrum into CRISP and infrared bands.
-5. `GerchbergSaxton` builds an initial form factor by Gaussian-extending measured magnitude data.
-6. Iteration alternates between time-domain constraints and frequency-domain constraints.
-7. The reconstructed profile and spectrum are rendered in the plot panel.
+4. The operator may load one `.npz` measurement bundle with one or more measured form-factor magnitudes.
+5. The operator presses `Run Reconstruction`.
+6. `AppLogic.active_measurements()` uses loaded measurements when available, otherwise simulated CRISP/IR measurements.
+7. `GerchbergSaxton` builds an initial form factor by Gaussian-extending measured magnitude data.
+8. Iteration alternates between time-domain constraints and frequency-domain constraints.
+9. The reconstructed profile, reconstructed spectrum, loaded measurement markers, and reconstruction summary are rendered in the GUI.
 
 ## Core Architecture
 
@@ -94,12 +127,12 @@ Important modules:
   - The profile model currently lives here, while tests previously expected it under `phase_weaver.model.profile_model`.
 
 - `src/phase_weaver/app/logic.py`
-  - Bridges UI state to profile generation, measurement simulation, reconstruction, and NPZ export.
+  - Bridges UI state to profile generation, measurement loading/simulation, reconstruction, summary reporting, and NPZ export.
 
 - `src/phase_weaver/app/ui/`
   - Contains Qt widgets for controls and plots.
   - The current controls panel uses generic option selector widgets for phase init and measurement source selection.
-  - `plot_controls_box.py` adds display controls for time-plot mode and line visibility.
+  - `plot_controls_box.py` now keeps only line-visibility controls; normalized time plotting is not exposed.
 
 ## Verification Results
 
@@ -111,8 +144,8 @@ uv run pytest
 
 Result: pass.
 
-- 152 tests collected.
-- 152 passed.
+- 158 tests collected.
+- 158 passed.
 
 ```bash
 uv run pytest tests
@@ -120,8 +153,8 @@ uv run pytest tests
 
 Result: pass.
 
-- 152 tests collected.
-- 152 passed.
+- 158 tests collected.
+- 158 passed.
 
 ```bash
 uv run ruff check .
@@ -132,7 +165,7 @@ Result: fail.
 Main causes:
 
 - Stale notebook imports.
-- Unused imports in `scripts/reconstruction_dev.py`, `controls_panel.py`, `core/reconstruction.py`, `core/utils.py`, `qt_theme.py`, and tests.
+- Unused imports in stale/dev code and older support modules.
 - Broad workspace drift outside the focused fix area.
 
 ```bash
@@ -161,45 +194,35 @@ The app window constructs and enters/exits the Qt event loop in offscreen mode. 
 
 ## Current Problems
 
-### 1. The Test Layout Is Confusing
+### 1. The Test Layout Is Mostly Stable
 
-`pytest` now runs cleanly, which is a good sign. The test layout is much less confusing now that `moved_tests/` has been removed, but the project still needs a single canonical test command in the repo metadata so contributors do not have to guess.
+`pytest` now runs cleanly. The project still needs one canonical documented command for day-to-day contributors, but this is no longer blocking app usage.
 
-### 2. Measurement UI Is Half-Removed
+### 2. Measurement UI Still Has Some Drift
 
-There are two measurement-control stories in the code:
+The active operator workflow now supports loading real `.npz` measurement bundles. There is still older measurement UI code that is not part of the active flow.
 
-- Current active UI: `ControlsPanel` uses `MultiOptionSelectorBox` with `MEASUREMENT_MODE.CRISP` and `MEASUREMENT_MODE.INFRARED`.
+- Current active UI: `ControlsPanel` has load, run, export controls plus simulated CRISP/IR fallback selectors.
 - Stale/unused UI: `measurement_box.py` still expects removed config constants and a richer `MeasurementState` with `mode`, `f_min_hz`, `f_max_hz`, `overlap_width_hz`, and `scale`.
 
 Impact:
 
 - `measurement_box.py` is stale and fails type checking.
-- Measurement scale fields exist in `MeasurementState`, but the current UI never exposes or updates them.
-- CRISP and infrared ranges are currently hard-coded in config.
+- Simulated CRISP and infrared ranges are currently hard-coded in config.
 
 Likely next decision:
 
-- Either delete the old `MeasurementBox` and commit to the simple CRISP/IR toggles.
-- Or restore a richer measurement UI and make `MeasurementState` match it.
+- Delete the old `MeasurementBox` unless the richer range/scale UI is needed for the experiment.
+- Keep external `.npz` measurements as the primary experiment path.
 
-### 3. Plot Controls Are New But Need Polish
+### 3. Plot Controls Are Now Simpler
 
-`plot_controls_box.py` and the plot-panel line visibility controls are newly introduced. The intent is good: users can switch time plot mode and hide/show plotted lines.
+`plot_controls_box.py` now controls line visibility only, and it sits to the left of the plots. The normalized time mode is no longer exposed in the active UI.
 
-Known issue:
+Remaining polish:
 
-- In `_render_time()`, the normalized branch currently still uses `current_input_ui` and `current_recon_ui`, not `normalized_input_ui` and `normalized_recon_ui`.
-
-Impact:
-
-- The UI label can say "Normalized distribution (1/fs)" while plotting current in kA.
-
-Likely fix:
-
-- Use normalized arrays when `TIME_PLOT_MODE.NORMALIZED` is selected.
-- Revisit the y-axis label; `Profile.values` are normalized density over seconds, not obviously `1/fs` unless converted.
-- Add plot-model or UI tests for both plot modes.
+- The old `TIME_PLOT_MODE.NORMALIZED` enum still exists in config but is not reachable from the GUI.
+- A later cleanup can remove the unused enum and normalized plot-model helpers.
 
 ### 4. Lint And Type Checking Are Not Clean
 
@@ -249,13 +272,13 @@ Current artifacts that should be intentionally handled:
    - Keep `make test` aligned with the canonical command.
    - Add any pytest configuration needed to keep the suite focused on the active tree.
 
-2. Fix concrete runtime bugs.
-   - Repair LAST phase initialization.
-   - Fix normalized plot mode to use normalized data.
-   - Add focused tests for both.
+2. Validate the experiment measurement workflow.
+   - Try a real `.npz` measurement bundle from operations.
+   - Confirm frequency units, magnitude scaling, and multi-measurement labels match actual files.
+   - Adjust the loader only if real files differ from the agreed schema.
 
 3. Clean stale code from the current refactor.
-   - Either remove or revive `measurement_box.py`.
+   - Delete or revive `measurement_box.py`.
    - Update or remove `scripts/reconstruction_dev.py`.
    - Add `.tmp-mpl/` to `.gitignore`.
 
@@ -271,14 +294,13 @@ Current artifacts that should be intentionally handled:
    - Make the GUI adapt its controls into core config.
    - Avoid importing app enums from core modules.
 
-2. Clarify measurement modeling.
-   - Define whether the product supports fixed CRISP/IR windows only, arbitrary windows, overlap blending, scaling, or all of these.
-   - Align `MeasurementState`, UI controls, tests, and reconstruction constraints around one model.
+2. Clarify simulated measurement modeling.
+   - Decide whether the fallback CRISP/IR simulation needs adjustable windows/scales.
+   - Keep real `.npz` measurements as the primary operational input.
 
-3. Improve reconstruction observability.
-   - Return iteration count and stopping reason.
-   - Track measurement error across iterations.
-   - Surface these diagnostics in the UI or export file.
+3. Improve reconstruction observability beyond the first summary.
+   - The app now reports iterations, stop reason, and final measurement error.
+   - A later improvement could show convergence history across iterations.
 
 4. Restore meaningful app tests.
    - Add tests for `AppLogic`, measurement slicing, plot model mode switching, and phase initialization.
@@ -294,10 +316,10 @@ PhaseWeaver should move toward being a trustworthy interactive reconstruction wo
 
 ## Suggested Next Work Order
 
-1. Stabilize tests and collection.
-2. Fix LAST phase initialization.
-3. Fix normalized plot mode.
-4. Resolve measurement UI drift.
+1. Test with real experiment `.npz` measurement bundles.
+2. Verify exported `.npz` files contain all metadata needed after a run.
+3. Decide whether stale `measurement_box.py` should be deleted.
+4. Add `.tmp-mpl/` to `.gitignore`.
 5. Clean Ruff errors in source files.
 6. Decide whether basedpyright should gate CI now or after PySide/test typing noise is reduced.
 7. Commit the refactor in a small, reviewable state.

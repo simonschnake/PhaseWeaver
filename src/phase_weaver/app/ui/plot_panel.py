@@ -2,6 +2,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from PySide6.QtWidgets import (
+    QHBoxLayout,
     QVBoxLayout,
     QWidget,
 )
@@ -19,7 +20,8 @@ from phase_weaver.core import CurrentProfile, FormFactor, Profile
 from .plot_controls_box import PlotControlsBox
 
 
-from phase_weaver.app.config import TIME_PLOT_MODE, PLOT_LINE_MODE
+from phase_weaver.app.config import PLOT_LINE_MODE
+from phase_weaver.app.logic import LoadedMeasurement
 
 
 class MplCanvas(FigureCanvas):
@@ -36,8 +38,6 @@ class PlotPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.current_normalized = False
-
         self.canvas = MplCanvas(self)
         self.canvas.setStyleSheet("background: #1e1e1e;")
         self.toolbar = NavigationToolbar(self.canvas, self)
@@ -45,10 +45,13 @@ class PlotPanel(QWidget):
         self.plot_controls = PlotControlsBox()
         self.plot_controls.changed.connect(self._render_from_controls)
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.toolbar)
+        plot_col = QVBoxLayout()
+        plot_col.addWidget(self.toolbar)
+        plot_col.addWidget(self.canvas, 1)
+
+        layout = QHBoxLayout(self)
         layout.addWidget(self.plot_controls)
-        layout.addWidget(self.canvas, 1)
+        layout.addLayout(plot_col, 1)
 
         self._create_artists()
         self._style_axes()
@@ -57,6 +60,7 @@ class PlotPanel(QWidget):
 
         self.time_model: TimePlotModel | None = None
         self.spectrum_model: SpectrumPlotModel | None = None
+        self.measurement_lines = []
 
     def render_input(self, prof_input: Profile, formfactor_input: FormFactor):
         if self.time_model is None:
@@ -98,21 +102,48 @@ class PlotPanel(QWidget):
         self._apply_line_visibility()
         self.canvas.draw_idle()
 
+    def clear_reconstruction(self) -> None:
+        if self.time_model is not None:
+            self.time_model.profile_recon = None
+        if self.spectrum_model is not None:
+            self.spectrum_model.formfactor_recon = None
+        if self.time_model is not None and self.spectrum_model is not None:
+            self._render_time()
+            self._render_spectrum()
+            self._render_fwhm()
+            self._apply_line_visibility()
+            self.canvas.draw_idle()
+
+    def render_measurements(
+        self, measurements: tuple[LoadedMeasurement, ...] = ()
+    ) -> None:
+        for line in self.measurement_lines:
+            line.remove()
+        self.measurement_lines = []
+
+        for item in measurements:
+            (line,) = self.canvas.ax_mag.plot(
+                item.measured.freq * 1e-12,
+                item.measured.mag,
+                linestyle="None",
+                marker="o",
+                markersize=3,
+                alpha=0.75,
+                label=item.label,
+            )
+            self.measurement_lines.append(line)
+
+        self.canvas.ax_mag.legend(loc="upper left", fontsize="small")
+        self.canvas.draw_idle()
+
     def _render_time(self) -> None:
         if self.time_model is None:
             raise ValueError(
                 "Time model is not initialized. Call render_input() first."
             )
-        mode = self.plot_controls.time_mode
-
-        if mode == TIME_PLOT_MODE.NORMALIZED:
-            input_y = self.time_model.current_input_ui
-            recon_y = self.time_model.current_recon_ui
-            self.canvas.ax_time.set_ylabel("Normalized distribution (1/fs)")
-        else:
-            input_y = self.time_model.current_input_ui
-            recon_y = self.time_model.current_recon_ui
-            self.canvas.ax_time.set_ylabel("Current (kA)")
+        input_y = self.time_model.current_input_ui
+        recon_y = self.time_model.current_recon_ui
+        self.canvas.ax_time.set_ylabel("Current (kA)")
 
         self.line_current.set_data(self.time_model.t_ui, input_y)
 
@@ -166,12 +197,8 @@ class PlotPanel(QWidget):
                 "Time model is not initialized. Call render_input() first."
             )
 
-        if self.plot_controls.time_mode == TIME_PLOT_MODE.NORMALIZED:
-            ci_fwhm = self.time_model.normalized_input_fwhm
-            cr_fwhm = self.time_model.normalized_recon_fwhm
-        else:
-            ci_fwhm = self.time_model.current_input_fwhm
-            cr_fwhm = self.time_model.current_recon_fwhm
+        ci_fwhm = self.time_model.current_input_fwhm
+        cr_fwhm = self.time_model.current_recon_fwhm
 
         visible_lines = self.plot_controls.visible_lines
 

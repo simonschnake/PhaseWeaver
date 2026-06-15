@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+from pathlib import Path
+
 import numpy as np
 
 from phase_weaver.app.config import (
@@ -24,10 +27,103 @@ from .plot_model import SpectrumPlotModel, TimePlotModel
 from .state import ControlsState, MeasurementState, ProfileModel, ReconstructionState
 
 
+@dataclass(slots=True)
+class LoadedMeasurement:
+    label: str
+    measured: MeasuredFormFactor
+
+
+@dataclass(slots=True)
+class ReconstructionSummary:
+    measurement_source: str = "simulated"
+    measurement_count: int = 0
+    iterations: int = 0
+    stop_reason: str = "not_run"
+    measurement_error: float | None = None
+    status: str = "not_run"
+
+
+def _decode_label(value: object, fallback: str) -> str:
+    arr = np.asarray(value)
+    if arr.shape == ():
+        item = arr.item()
+        if isinstance(item, bytes):
+            return item.decode("utf-8")
+        return str(item)
+    return fallback
+
+
+def load_measurements_npz(path: str | Path) -> tuple[LoadedMeasurement, ...]:
+    path = Path(path)
+    with np.load(path, allow_pickle=False) as data:
+        keys = set(data.files)
+
+        if {"freq_hz", "mag"} <= keys:
+            label = _decode_label(data["label"], "measurement 1") if "label" in keys else "measurement 1"
+            return (
+                LoadedMeasurement(
+                    label=label,
+                    measured=MeasuredFormFactor(freq=data["freq_hz"], mag=data["mag"]),
+                ),
+            )
+
+        indices: set[int] = set()
+        for key in keys:
+            if key.startswith("freq_hz_"):
+                suffix = key.removeprefix("freq_hz_")
+                if suffix.isdigit():
+                    indices.add(int(suffix))
+            elif key.startswith("mag_"):
+                suffix = key.removeprefix("mag_")
+                if suffix.isdigit():
+                    indices.add(int(suffix))
+
+        if not indices:
+            raise ValueError(
+                "measurement npz must contain freq_hz/mag or indexed freq_hz_N/mag_N arrays"
+            )
+
+        measurements: list[LoadedMeasurement] = []
+        for index in sorted(indices):
+            freq_key = f"freq_hz_{index}"
+            mag_key = f"mag_{index}"
+            if freq_key not in keys or mag_key not in keys:
+                raise ValueError(
+                    f"measurement {index} must contain both {freq_key!r} and {mag_key!r}"
+                )
+
+            label_key = f"label_{index}"
+            label = (
+                _decode_label(data[label_key], f"measurement {index + 1}")
+                if label_key in keys
+                else f"measurement {index + 1}"
+            )
+            measurements.append(
+                LoadedMeasurement(
+                    label=label,
+                    measured=MeasuredFormFactor(freq=data[freq_key], mag=data[mag_key]),
+                )
+            )
+
+    return tuple(measurements)
+
+
 class AppLogic:
     def __init__(self):
         self.phase_last: np.ndarray | None = None
         self.center_prof = CenterFirstMoment()
+        self.loaded_measurements: tuple[LoadedMeasurement, ...] = ()
+        self.reconstruction_summary = ReconstructionSummary()
+
+    def load_measurements(self, path: str | Path) -> tuple[LoadedMeasurement, ...]:
+        self.loaded_measurements = load_measurements_npz(path)
+        self.phase_last = None
+        self.reconstruction_summary = ReconstructionSummary(
+            measurement_source="loaded",
+            measurement_count=len(self.loaded_measurements),
+            status="not_run",
+        )
+        return self.loaded_measurements
 
     def compute_initial(
         self, controls_state: ControlsState
@@ -49,7 +145,8 @@ class AppLogic:
         measurements: tuple[MeasuredFormFactor, ...],
         controls_state: ControlsState,
         ff_input: FormFactor | None,
-    ) -> tuple[Profile, FormFactor]:
+        measurement_source: str = "simulated",
+    ) -> tuple[Profile, FormFactor, ReconstructionSummary]:
         reconstruction = GerchbergSaxton(
             grid=grid,
             measurements=measurements,
@@ -61,7 +158,16 @@ class AppLogic:
         prof_recon, ff_recon = reconstruction.run()
 
         self.phase_last = ff_recon.phase.copy()
-        return prof_recon, ff_recon
+        summary = ReconstructionSummary(
+            measurement_source=measurement_source,
+            measurement_count=len(measurements),
+            iterations=reconstruction.last_iterations,
+            stop_reason=reconstruction.last_stop_reason,
+            measurement_error=reconstruction.last_measurement_error,
+            status="finished",
+        )
+        self.reconstruction_summary = summary
+        return prof_recon, ff_recon, summary
 
     def compute_input_profile(self, app_state: ControlsState) -> Profile:
         profile_model = ProfileModel(app_state.scenario)
@@ -102,6 +208,13 @@ class AppLogic:
 
         return tuple(measured)
 
+    def active_measurements(
+        self, form_factor: FormFactor, measurement_state: MeasurementState
+    ) -> tuple[tuple[MeasuredFormFactor, ...], str]:
+        if self.loaded_measurements:
+            return tuple(item.measured for item in self.loaded_measurements), "loaded"
+        return self.compute_measured_formfactor(form_factor, measurement_state), "simulated"
+
     def _build_reconstruction(
         self,
         grid: Grid,
@@ -119,9 +232,13 @@ class AppLogic:
 
     def export_npz(
         self,
+        path: str | Path,
         time_model: TimePlotModel | None,
         spectrum_model: SpectrumPlotModel | None,
+        controls_state: ControlsState | None = None,
+        summary: ReconstructionSummary | None = None,
     ) -> None:
+        summary = summary or self.reconstruction_summary
         payload = {
             "t": time_model.t_ui if time_model is not None else np.array([]),
             "current_recon": time_model.current_recon_ui
@@ -143,5 +260,45 @@ class AppLogic:
             "phase_input": spectrum_model.phase_input_ui
             if spectrum_model is not None
             else np.array([]),
+            "measurement_source": np.array(summary.measurement_source),
+            "measurement_count": np.array(summary.measurement_count),
+            "reconstruction_status": np.array(summary.status),
+            "reconstruction_iterations": np.array(summary.iterations),
+            "reconstruction_stop_reason": np.array(summary.stop_reason),
+            "reconstruction_measurement_error": np.array(
+                np.nan
+                if summary.measurement_error is None
+                else summary.measurement_error
+            ),
         }
-        np.savez(file="export.npz", **payload)
+
+        if controls_state is not None:
+            payload.update(self._state_payload(controls_state))
+
+        for i, item in enumerate(self.loaded_measurements):
+            payload[f"measurement_label_{i}"] = np.array(item.label)
+            payload[f"measurement_freq_hz_{i}"] = item.measured.freq
+            payload[f"measurement_mag_{i}"] = item.measured.mag
+
+        np.savez(file=path, **payload)
+
+    def _state_payload(self, controls_state: ControlsState) -> dict[str, np.ndarray]:
+        scenario = controls_state.scenario
+        payload: dict[str, np.ndarray] = {
+            "phase_init_mode": np.array(controls_state.reconstruction.phase_init_mode.value),
+            "profile_dt_s": np.array(scenario.dt),
+            "profile_t_max_s": np.array(scenario.t_max),
+            "profile_charge_c": np.array(scenario.charge),
+            "profile_peak2_enabled": np.array(scenario.peak2_enabled),
+        }
+        for prefix, params in (
+            ("background", scenario.background),
+            ("peak", scenario.peak),
+            ("peak2", scenario.peak2),
+        ):
+            payload[f"{prefix}_center_s"] = np.array(params.center)
+            payload[f"{prefix}_width_s"] = np.array(params.width)
+            payload[f"{prefix}_skew"] = np.array(params.skew)
+            payload[f"{prefix}_order"] = np.array(params.order)
+            payload[f"{prefix}_amplitude"] = np.array(params.amplitude)
+        return payload

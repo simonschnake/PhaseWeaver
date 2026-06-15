@@ -325,6 +325,9 @@ class GerchbergSaxton(ReconstructionAlgorithm):
         self.reconstruction_state = reconstruction_state
         self.formfactor_input = formfactor_input
         self.phase_last = phase_last
+        self.last_iterations = 0
+        self.last_stop_reason = "not_run"
+        self.last_measurement_error: float | None = None
 
         self.transform = DCPhysicalRFFT(
             unwrap_phase=True,
@@ -366,6 +369,9 @@ class GerchbergSaxton(ReconstructionAlgorithm):
         self.frequency_constraints.apply(ff)
 
         self.stop.reset()
+        self.last_iterations = 0
+        self.last_stop_reason = "not_run"
+        self.last_measurement_error = None
 
         prof = ff.to_profile(transform=self.transform)
         self.time_constraints.apply(prof)
@@ -379,8 +385,26 @@ class GerchbergSaxton(ReconstructionAlgorithm):
             self.frequency_constraints.apply(ff)
 
             self.stop.update(prof=prof, ff=ff)
+            self.last_iterations += 1
 
+        self.last_stop_reason = self._describe_stop_reason()
+        self.last_measurement_error = self._measurement_error(ff)
         return prof, ff
+
+    def _describe_stop_reason(self) -> str:
+        reasons: list[str] = []
+        for criterion in self.stop._criteria:
+            if criterion.direct_stop or criterion.stop:
+                reasons.append(criterion.name)
+        return "+".join(reasons) if reasons else "unknown"
+
+    def _measurement_error(self, ff: FormFactor) -> float:
+        err = np.empty(len(self.measurements), dtype=float)
+        for i, meas in enumerate(self.measurements):
+            mag_interp = np.interp(meas.freq, ff.grid.f_pos, ff.mag)
+            denom = max(np.linalg.norm(meas.mag), np.finfo(float).eps)
+            err[i] = float(np.linalg.norm(mag_interp - meas.mag) / denom)
+        return float(np.sqrt(np.mean(err**2)))
 
     def _calculate_init_formfactor(
         self,

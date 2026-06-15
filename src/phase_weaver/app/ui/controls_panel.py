@@ -9,15 +9,15 @@ from ..state import (
     ReconstructionState,
     ControlsState,
 )
-from .band_limit_box import BandLimitBox
 from .gaussian_group import GaussianGroup
-from .measurement_box import MeasurementBox
 from .option_selector_box import MultiOptionSelectorBox, OptionSelectorBox
 
 
 class ControlsPanel(QWidget):
     changed = Signal()
     export_requested = Signal()
+    measurements_load_requested = Signal()
+    reconstruction_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -74,7 +74,16 @@ class ControlsPanel(QWidget):
         recon_col.addWidget(self.measurement_box)
         # recon_col.addWidget(self.band_limit_box)
 
-        # Small Debugging Export
+        self.load_measurements_button = QPushButton("Load Measurements")
+        self.load_measurements_button.clicked.connect(
+            self.measurements_load_requested.emit
+        )
+        recon_col.addWidget(self.load_measurements_button)
+
+        self.reconstruct_button = QPushButton("Run Reconstruction")
+        self.reconstruct_button.clicked.connect(self.reconstruction_requested.emit)
+        recon_col.addWidget(self.reconstruct_button)
+
         self.export_button = QPushButton("Export Data")
         self.export_button.clicked.connect(self.export_requested.emit)
         recon_col.addWidget(self.export_button)
