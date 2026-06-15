@@ -131,3 +131,6 @@ def test_app_logic_export_writes_measurements_and_summary(tmp_path):
         assert data["measurement_label_0"].item() == "measurement 1"
         assert_allclose(data["measurement_freq_hz_0"], [10.0, 20.0])
         assert data["phase_init_mode"].item() == "zero"
+        assert "Normalize area" in set(data["reconstruction_time_constraints"])
+        assert "Blend measured" in set(data["reconstruction_frequency_constraints"])
+        assert "Measurement error" in set(data["reconstruction_stop_conditions"])

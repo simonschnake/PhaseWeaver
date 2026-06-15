@@ -6,7 +6,12 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
-from phase_weaver.app.config import PHASE_INIT_MODE
+from phase_weaver.app.config import (
+    PHASE_INIT_MODE,
+    RECON_FREQUENCY_CONSTRAINT,
+    RECON_STOP_CONDITION,
+    RECON_TIME_CONSTRAINT,
+)
 from phase_weaver.app.logic import AppLogic
 from phase_weaver.app.state import (
     ControlsState,
@@ -153,6 +158,56 @@ def test_gerchberg_saxton_initializes_with_zero_magnitudes(grid: Grid):
     assert alg.formfactor_init.mag.shape == measured.mag.shape
     assert np.isfinite(alg.formfactor_init.mag).all()
     assert np.all(alg.formfactor_init.mag >= 0)
+
+
+def test_gerchberg_saxton_uses_selected_reconstruction_options(grid: Grid):
+    measured = MeasuredFormFactor(
+        freq=grid.f_pos,
+        mag=np.linspace(1.0, 0.1, len(grid.f_pos)),
+    )
+    state = ReconstructionState(
+        phase_init_mode=PHASE_INIT_MODE.ZERO,
+        time_constraints={
+            RECON_TIME_CONSTRAINT.NON_NEGATIVE,
+            RECON_TIME_CONSTRAINT.NORMALIZE_AREA,
+        },
+        frequency_constraints={RECON_FREQUENCY_CONSTRAINT.BLEND_MEASURED},
+        stop_conditions={RECON_STOP_CONDITION.MAX_ITER},
+    )
+
+    alg = GerchbergSaxton(
+        grid=grid,
+        measurements=(measured,),
+        reconstruction_state=state,
+    )
+
+    assert [type(c).__name__ for c in alg.time_constraints._constraints] == [
+        "NonNegativity",
+        "NormalizeArea",
+    ]
+    assert [type(c).__name__ for c in alg.frequency_constraints._constraints] == [
+        "BlendMeasuredMagnitude"
+    ]
+    assert [type(c).__name__ for c in alg.stop._criteria] == ["MaxIter"]
+
+
+def test_empty_stop_selection_falls_back_to_max_iter(grid: Grid):
+    measured = MeasuredFormFactor(
+        freq=grid.f_pos,
+        mag=np.linspace(1.0, 0.1, len(grid.f_pos)),
+    )
+    state = ReconstructionState(
+        phase_init_mode=PHASE_INIT_MODE.ZERO,
+        stop_conditions=set(),
+    )
+
+    alg = GerchbergSaxton(
+        grid=grid,
+        measurements=(measured,),
+        reconstruction_state=state,
+    )
+
+    assert [type(c).__name__ for c in alg.stop._criteria] == ["MaxIter"]
 
 
 def test_high_frequency_decay_bounds_start_after_last_measurement(grid: Grid):

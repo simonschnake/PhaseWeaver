@@ -48,6 +48,21 @@ class ControlsPanel(QWidget):
         self.measurement_box = MultiOptionSelectorBox(
             title="Measurements", enum_cls=cfg.MEASUREMENT_MODE
         )
+        self.time_constraint_box = MultiOptionSelectorBox(
+            title="Time Constraints",
+            enum_cls=cfg.RECON_TIME_CONSTRAINT,
+            default=set(cfg.RECON_TIME_CONSTRAINT_DEFAULT),
+        )
+        self.frequency_constraint_box = MultiOptionSelectorBox(
+            title="Frequency Constraints",
+            enum_cls=cfg.RECON_FREQUENCY_CONSTRAINT,
+            default=set(cfg.RECON_FREQUENCY_CONSTRAINT_DEFAULT),
+        )
+        self.stop_condition_box = MultiOptionSelectorBox(
+            title="Stop Conditions",
+            enum_cls=cfg.RECON_STOP_CONDITION,
+            default=set(cfg.RECON_STOP_CONDITION_DEFAULT),
+        )
 
         # self.band_limit_box = BandLimitBox()
 
@@ -57,6 +72,9 @@ class ControlsPanel(QWidget):
             self.spike2_box,
             self.phase_init_box,
             self.measurement_box,
+            self.time_constraint_box,
+            self.frequency_constraint_box,
+            self.stop_condition_box,
             # self.mag_init_box,
             # self.band_limit_box,
         ):
@@ -72,6 +90,9 @@ class ControlsPanel(QWidget):
         # recon_col.addWidget(self.mag_init_box)
         recon_col.addWidget(self.phase_init_box)
         recon_col.addWidget(self.measurement_box)
+        recon_col.addWidget(self.time_constraint_box)
+        recon_col.addWidget(self.frequency_constraint_box)
+        recon_col.addWidget(self.stop_condition_box)
         # recon_col.addWidget(self.band_limit_box)
 
         self.load_measurements_button = QPushButton("Load Measurements")
@@ -112,6 +133,9 @@ class ControlsPanel(QWidget):
         return ReconstructionState(
             # mag_init_mode=self.mag_init_box.mode,
             phase_init_mode=self.phase_init_box.mode,
+            time_constraints=set(self.time_constraint_box.selected_modes),
+            frequency_constraints=set(self.frequency_constraint_box.selected_modes),
+            stop_conditions=set(self.stop_condition_box.selected_modes),
             # band_limit=band_limit_enabled,
             # band_limit_f_cut_hz=f_cut_hz,
         )

@@ -14,6 +14,8 @@ from .base import (
 from .constraints import (
     CenterFirstMoment,
     ClampMagnitude,
+    CombinedFrequencyConstraint,
+    CombinedTimeConstraint,
     CutAfterNthZeroFromPeak,
     EnforceDCOne,
     HighFrequencyMagnitudeDecay,
@@ -31,6 +33,40 @@ from .utils import gaussian_extend, interpolate_between_functions
 
 class PhaseInitState(Protocol):
     phase_init_mode: object
+    time_constraints: set[object]
+    frequency_constraints: set[object]
+    stop_conditions: set[object]
+
+
+DEFAULT_TIME_CONSTRAINT_NAMES = {
+    "CUT_AFTER_ZERO",
+    "NON_NEGATIVE",
+    "NORMALIZE_AREA",
+    "CENTER",
+}
+DEFAULT_FREQUENCY_CONSTRAINT_NAMES = {
+    "CLAMP_MAGNITUDE",
+    "ENFORCE_DC",
+    "HIGH_FREQ_DECAY",
+    "BLEND_MEASURED",
+}
+DEFAULT_STOP_CONDITION_NAMES = {
+    "MAX_ITER",
+    "MIN_ITER",
+    "PHASE_STABLE",
+    "MEASUREMENT_ERROR",
+}
+
+
+def _selected_names(
+    state: PhaseInitState,
+    attr: str,
+    default: set[str],
+) -> set[str]:
+    selected = getattr(state, attr, None)
+    if selected is None:
+        return set(default)
+    return {getattr(item, "name", str(item)) for item in selected}
 
 
 def minimum_phase_from_mag(
@@ -368,30 +404,13 @@ class GerchbergSaxton(ReconstructionAlgorithm):
             phase_last=phase_last,
         )
 
-        self.time_constraints = (
-            CutAfterNthZeroFromPeak(n=3)
-            + NonNegativity()
-            + NormalizeArea()
-            + CenterFirstMoment()
+        self.time_constraints = self._build_time_constraints(reconstruction_state)
+        self.frequency_constraints = self._build_frequency_constraints(
+            reconstruction_state,
+            measurements,
+            grid,
         )
-
-        frequency_constraints = ClampMagnitude() + EnforceDCOne()
-        decay_bounds = _high_frequency_decay_bounds(measurements, grid)
-        if decay_bounds is not None:
-            frequency_constraints += HighFrequencyMagnitudeDecay(*decay_bounds)
-
-        self.frequency_constraints = (
-            frequency_constraints
-            + BlendMeasuredMagnitude(measurements, transition_width=0.0, scale=False)
-        )
-        self.stop = (
-            MaxIter(n_iter=1_000)
-            + PhaseStoppedChanging(tol=1e-8, patience=5)
-            + MinIter(n_iter=10)
-            + MeasurementsStoppedChanging(
-                measured_ff=measurements, tol=1e-4, patience=3
-            )
-        )
+        self.stop = self._build_stop_conditions(reconstruction_state, measurements)
 
     def run(self) -> tuple[Profile, FormFactor]:
 
@@ -420,6 +439,84 @@ class GerchbergSaxton(ReconstructionAlgorithm):
         self.last_stop_reason = self._describe_stop_reason()
         self.last_measurement_error = self._measurement_error(ff)
         return prof, ff
+
+    def _build_time_constraints(
+        self, reconstruction_state: PhaseInitState
+    ) -> CombinedTimeConstraint:
+        selected = _selected_names(
+            reconstruction_state,
+            "time_constraints",
+            DEFAULT_TIME_CONSTRAINT_NAMES,
+        )
+        constraints = []
+        if "CUT_AFTER_ZERO" in selected:
+            constraints.append(CutAfterNthZeroFromPeak(n=3))
+        if "NON_NEGATIVE" in selected:
+            constraints.append(NonNegativity())
+        if "NORMALIZE_AREA" in selected:
+            constraints.append(NormalizeArea())
+        if "CENTER" in selected:
+            constraints.append(CenterFirstMoment())
+        return CombinedTimeConstraint(*constraints)
+
+    def _build_frequency_constraints(
+        self,
+        reconstruction_state: PhaseInitState,
+        measurements: tuple[MeasuredFormFactor, ...],
+        grid: Grid,
+    ) -> CombinedFrequencyConstraint:
+        selected = _selected_names(
+            reconstruction_state,
+            "frequency_constraints",
+            DEFAULT_FREQUENCY_CONSTRAINT_NAMES,
+        )
+        constraints = []
+        if "CLAMP_MAGNITUDE" in selected:
+            constraints.append(ClampMagnitude())
+        if "ENFORCE_DC" in selected:
+            constraints.append(EnforceDCOne())
+        if "HIGH_FREQ_DECAY" in selected:
+            decay_bounds = _high_frequency_decay_bounds(measurements, grid)
+            if decay_bounds is not None:
+                constraints.append(HighFrequencyMagnitudeDecay(*decay_bounds))
+        if "BLEND_MEASURED" in selected:
+            constraints.append(
+                BlendMeasuredMagnitude(
+                    measurements,
+                    transition_width=0.0,
+                    scale=False,
+                )
+            )
+        return CombinedFrequencyConstraint(*constraints)
+
+    def _build_stop_conditions(
+        self,
+        reconstruction_state: PhaseInitState,
+        measurements: tuple[MeasuredFormFactor, ...],
+    ) -> StopCriterion:
+        selected = _selected_names(
+            reconstruction_state,
+            "stop_conditions",
+            DEFAULT_STOP_CONDITION_NAMES,
+        )
+        criteria: list[StopCriterion] = []
+        if "MAX_ITER" in selected or not selected:
+            criteria.append(MaxIter(n_iter=1_000))
+        if "PHASE_STABLE" in selected:
+            criteria.append(PhaseStoppedChanging(tol=1e-8, patience=5))
+        if "MIN_ITER" in selected:
+            criteria.append(MinIter(n_iter=10))
+        if "MEASUREMENT_ERROR" in selected:
+            criteria.append(
+                MeasurementsStoppedChanging(
+                    measured_ff=measurements,
+                    tol=1e-4,
+                    patience=3,
+                )
+            )
+        if not criteria:
+            criteria.append(MaxIter(n_iter=1_000))
+        return CombinedStopCriterion(*criteria)
 
     def _describe_stop_reason(self) -> str:
         reasons: list[str] = []

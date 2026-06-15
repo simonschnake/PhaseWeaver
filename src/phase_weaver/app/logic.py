@@ -284,8 +284,18 @@ class AppLogic:
 
     def _state_payload(self, controls_state: ControlsState) -> dict[str, np.ndarray]:
         scenario = controls_state.scenario
+        reconstruction = controls_state.reconstruction
         payload: dict[str, np.ndarray] = {
-            "phase_init_mode": np.array(controls_state.reconstruction.phase_init_mode.value),
+            "phase_init_mode": np.array(reconstruction.phase_init_mode.value),
+            "reconstruction_time_constraints": np.array(
+                sorted(option.value for option in reconstruction.time_constraints)
+            ),
+            "reconstruction_frequency_constraints": np.array(
+                sorted(option.value for option in reconstruction.frequency_constraints)
+            ),
+            "reconstruction_stop_conditions": np.array(
+                sorted(option.value for option in reconstruction.stop_conditions)
+            ),
             "profile_dt_s": np.array(scenario.dt),
             "profile_t_max_s": np.array(scenario.t_max),
             "profile_charge_c": np.array(scenario.charge),
