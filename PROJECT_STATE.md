@@ -6,7 +6,7 @@ Last updated: 2026-06-15
 
 PhaseWeaver is currently a small Python/PySide6 scientific workbench for exploring current-profile reconstruction from form-factor magnitude data. The app can generate a configurable time-domain current profile, compute its spectrum magnitude and phase, simulate partial measurements, and run a Gerchberg-Saxton-style magnitude-only reconstruction.
 
-The project is functional enough that the full pytest suite passes and the Qt main window can be constructed in an offscreen smoke test. The last-phase reconstruction bug has been fixed, and the first experiment-use workflow is now in place: load real `.npz` measurement bundles, compare them against the super-Gaussian model `|F|`, run GS deliberately from a button, inspect a compact reconstruction summary, and export through a save dialog.
+The project is functional enough that the full pytest suite passes and the Qt main window can be constructed in an offscreen smoke test. The last-phase reconstruction bug has been fixed, the first experiment-use workflow is in place, and the plots now render correctly on initial load instead of only after running reconstruction once.
 
 The next work should focus on validating this workflow with real experiment files, then tightening the remaining stale UI and static-tool drift.
 
@@ -45,7 +45,7 @@ If the goal is to use PhaseWeaver for experiment operation in the next week, the
 
 - Branch: `main`
 - Tracking: `origin/main`
-- Latest commit: `cce0b3c fix last phase init and refresh state`
+- Latest commit: `e55073f fix initial plot rendering`
 - Worktree state: dirty
 - Package version: `0.4.0`
 - Python package layout: `src/phase_weaver`

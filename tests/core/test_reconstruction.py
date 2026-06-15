@@ -7,6 +7,13 @@ import pytest
 from numpy.testing import assert_allclose
 
 from phase_weaver.app.config import PHASE_INIT_MODE
+from phase_weaver.app.logic import AppLogic
+from phase_weaver.app.state import (
+    ControlsState,
+    MeasurementState,
+    ProfileModelState,
+    ReconstructionState,
+)
 from phase_weaver.core.base import DCPhysicalRFFT, FormFactor, Grid, Profile
 from phase_weaver.core.measurement import MeasuredFormFactor
 from phase_weaver.core.reconstruction import (
@@ -16,6 +23,7 @@ from phase_weaver.core.reconstruction import (
     MeasurementsStoppedChanging,
     MinIter,
     PhaseStoppedChanging,
+    _high_frequency_decay_bounds,
     minimum_phase_from_mag,
 )
 from phase_weaver.core.utils import trapz_uniform
@@ -119,6 +127,17 @@ def test_combined_stop_criterion_honors_direct_stop():
     assert stop() is True
 
 
+def test_combined_stop_criterion_excludes_direct_only_criteria_from_all_stop():
+    stop = MaxIter(100) + MinIter(2)
+
+    stop.reset()
+    assert stop() is False
+    stop.update()
+    assert stop() is False
+    stop.update()
+    assert stop() is True
+
+
 def test_gerchberg_saxton_initializes_with_zero_magnitudes(grid: Grid):
     measured = MeasuredFormFactor(
         freq=grid.f_pos,
@@ -134,6 +153,17 @@ def test_gerchberg_saxton_initializes_with_zero_magnitudes(grid: Grid):
     assert alg.formfactor_init.mag.shape == measured.mag.shape
     assert np.isfinite(alg.formfactor_init.mag).all()
     assert np.all(alg.formfactor_init.mag >= 0)
+
+
+def test_high_frequency_decay_bounds_start_after_last_measurement(grid: Grid):
+    measured = MeasuredFormFactor(
+        freq=grid.f_pos[:11],
+        mag=np.ones(11),
+    )
+
+    bounds = _high_frequency_decay_bounds((measured,), grid)
+
+    assert bounds == (grid.f_pos[10], grid.f_pos[20])
 
 
 def test_gerchberg_saxton_last_phase_initialization_uses_previous_phase(grid: Grid):
@@ -210,3 +240,58 @@ def test_gerchberg_saxton_run_can_be_forced_to_stop_quickly(
     assert np.isfinite(area)
     assert abs(area - 1.0) < 1e-8
     assert abs(first_moment(grid.t, prof.values, grid.dt)) < 2.0 * grid.dt
+
+
+def test_default_app_reconstruction_stops_on_convergence_before_max_iter():
+    logic = AppLogic()
+    state = ControlsState(
+        scenario=ProfileModelState(),
+        measurement=MeasurementState(),
+        reconstruction=ReconstructionState(phase_init_mode=PHASE_INIT_MODE.ZERO),
+    )
+
+    prof_input, ff_input, measurements = logic.compute_initial(state)
+    _prof_recon, _ff_recon, summary = logic.compute_reconstruction(
+        grid=prof_input.grid,
+        measurements=measurements,
+        controls_state=state,
+        ff_input=ff_input,
+    )
+
+    assert summary.iterations < 1_000
+    assert summary.stop_reason == (
+        "phase_stopped_changing+min_iter+measurement_distance_below"
+    )
+    assert summary.measurement_error is not None
+    assert summary.measurement_error < 1e-4
+
+
+def test_crisp_only_reconstruction_matches_measured_band_before_max_iter():
+    logic = AppLogic()
+    state = ControlsState(
+        scenario=ProfileModelState(),
+        measurement=MeasurementState(crisp=True),
+        reconstruction=ReconstructionState(phase_init_mode=PHASE_INIT_MODE.ZERO),
+    )
+
+    prof_input, ff_input, measurements = logic.compute_initial(state)
+    _prof_recon, _ff_recon, summary = logic.compute_reconstruction(
+        grid=prof_input.grid,
+        measurements=measurements,
+        controls_state=state,
+        ff_input=ff_input,
+    )
+
+    assert summary.iterations < 1_000
+    assert summary.stop_reason == (
+        "phase_stopped_changing+min_iter+measurement_distance_below"
+    )
+    assert summary.measurement_error is not None
+    assert summary.measurement_error < 1e-4
+
+    high_freq = measurements[0].freq[-1] + (
+        measurements[0].freq[-1] - measurements[0].freq[0]
+    )
+    high_mask = _ff_recon.grid.f_pos >= high_freq
+    assert np.any(high_mask)
+    assert_allclose(_ff_recon.mag[high_mask], 0.0, atol=1e-12)

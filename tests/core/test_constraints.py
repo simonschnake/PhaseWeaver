@@ -10,6 +10,7 @@ from phase_weaver.core.constraints import (
     CombinedTimeConstraint,
     EnforceDCOne,
     FrequencyConstraint,
+    HighFrequencyMagnitudeDecay,
     NonNegativity,
     NormalizeArea,
     ReplacePhaseEndLinear,
@@ -53,6 +54,35 @@ def test_frequency_constraints_can_be_combined_and_applied(grid):
 
     assert ff.mag[0] == pytest.approx(1.0)
     assert np.all(np.isfinite(ff.mag))
+
+
+def test_high_frequency_magnitude_decay_tapers_tail_to_zero(grid):
+    mag = np.ones(grid.N // 2 + 1, dtype=float)
+    phase = np.zeros_like(mag)
+    ff = FormFactor(grid=grid, mag=mag.copy(), phase=phase.copy())
+
+    start_freq = 5.0 * grid.df
+    end_freq = 8.0 * grid.df
+    constraint = HighFrequencyMagnitudeDecay(
+        start_freq=start_freq,
+        end_freq=end_freq,
+    )
+    constraint.apply(ff)
+
+    assert_allclose(ff.mag[grid.f_pos <= start_freq], 1.0)
+    assert np.all(ff.mag[(grid.f_pos > start_freq) & (grid.f_pos < end_freq)] < 1.0)
+    assert_allclose(ff.mag[grid.f_pos >= end_freq], 0.0)
+
+
+def test_high_frequency_magnitude_decay_validates_inputs():
+    with pytest.raises(ValueError, match="start_freq must be finite and non-negative"):
+        HighFrequencyMagnitudeDecay(start_freq=-1.0, end_freq=2.0)
+
+    with pytest.raises(ValueError, match="end_freq must be greater than start_freq"):
+        HighFrequencyMagnitudeDecay(start_freq=2.0, end_freq=2.0)
+
+    with pytest.raises(ValueError, match="floor must be finite and non-negative"):
+        HighFrequencyMagnitudeDecay(start_freq=1.0, end_freq=2.0, floor=-1.0)
 
 
 def test_replace_phase_end_linear(grid):
@@ -188,6 +218,37 @@ def test_blend_measured_magnitude_matches_helper(grid):
         y_target=mag,
         x_source=measured[0].freq,
         y_source=measured[0].mag * avg_current_mag / avg_measured_mag,
+        power=2.0,
+        transition_width=5.0,
+    )
+    assert_allclose(ff.mag, expected)
+
+
+def test_blend_measured_magnitude_without_scaling_uses_raw_measurement(grid):
+    mag = np.full(grid.N // 2 + 1, 10.0, dtype=float)
+    phase = np.zeros_like(mag)
+    ff = FormFactor(grid=grid, mag=mag.copy(), phase=phase.copy())
+
+    measured = (
+        MeasuredFormFactor(
+            freq=np.array([0.0, 50.0, 100.0]),
+            mag=np.array([1.0, 2.0, 3.0]),
+        ),
+    )
+
+    constraint = BlendMeasuredMagnitude(
+        measured=measured,
+        power=2.0,
+        transition_width=5.0,
+        scale=False,
+    )
+    constraint.apply(ff)
+
+    expected = smooth_overlap(
+        x_target=grid.f_pos,
+        y_target=mag,
+        x_source=measured[0].freq,
+        y_source=measured[0].mag,
         power=2.0,
         transition_width=5.0,
     )

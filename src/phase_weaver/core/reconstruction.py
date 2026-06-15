@@ -16,6 +16,7 @@ from .constraints import (
     ClampMagnitude,
     CutAfterNthZeroFromPeak,
     EnforceDCOne,
+    HighFrequencyMagnitudeDecay,
     NonNegativity,
     NormalizeArea,
     BlendMeasuredMagnitude,
@@ -75,6 +76,22 @@ def _extension_min_positive(y_source: np.ndarray) -> float:
     return max(np.finfo(float).eps, positive_peak * 1e-12)
 
 
+def _high_frequency_decay_bounds(
+    measurements: tuple[MeasuredFormFactor, ...],
+    grid: Grid,
+) -> tuple[float, float] | None:
+    start_freq = max(float(meas.freq[-1]) for meas in measurements)
+    if start_freq >= grid.f_pos[-1]:
+        return None
+
+    measured_span = max(float(meas.freq[-1] - meas.freq[0]) for meas in measurements)
+    decay_width = max(measured_span, grid.df)
+    end_freq = min(grid.f_pos[-1], start_freq + decay_width)
+    if end_freq <= start_freq:
+        return None
+    return start_freq, end_freq
+
+
 # =============================================================================
 # Stopping Criteria
 # =============================================================================
@@ -95,6 +112,10 @@ class StopCriterion(ABC):
     @property
     def direct_stop(self) -> bool:
         return False
+
+    @property
+    def participates_in_all_stop(self) -> bool:
+        return True
 
     @abstractmethod
     def reset(self) -> None: ...
@@ -139,8 +160,9 @@ class CombinedStopCriterion(StopCriterion):
             )
 
     def __call__(self) -> bool:
-        all_stop = all(c.stop for c in self._criteria)
         any_direct_stop = any(c.direct_stop for c in self._criteria)
+        criteria = [c for c in self._criteria if c.participates_in_all_stop]
+        all_stop = bool(criteria) and all(c.stop for c in criteria)
         return all_stop or any_direct_stop
 
 
@@ -183,6 +205,10 @@ class MaxIter(StopCriterion):
     @property
     def direct_stop(self) -> bool:
         return self._counter >= self.n_iter
+
+    @property
+    def participates_in_all_stop(self) -> bool:
+        return False
 
     def update(
         self,
@@ -349,10 +375,14 @@ class GerchbergSaxton(ReconstructionAlgorithm):
             + CenterFirstMoment()
         )
 
+        frequency_constraints = ClampMagnitude() + EnforceDCOne()
+        decay_bounds = _high_frequency_decay_bounds(measurements, grid)
+        if decay_bounds is not None:
+            frequency_constraints += HighFrequencyMagnitudeDecay(*decay_bounds)
+
         self.frequency_constraints = (
-            ClampMagnitude()
-            + EnforceDCOne()
-            + BlendMeasuredMagnitude(measurements, scale=True)
+            frequency_constraints
+            + BlendMeasuredMagnitude(measurements, transition_width=0.0, scale=False)
         )
         self.stop = (
             MaxIter(n_iter=1_000)

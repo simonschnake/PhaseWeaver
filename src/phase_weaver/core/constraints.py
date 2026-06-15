@@ -91,6 +91,51 @@ class EnforceDCOne(FrequencyConstraint):
         ff.mag /= np.max([ff.mag[0], self.eps])
 
 
+class HighFrequencyMagnitudeDecay(FrequencyConstraint):
+    """
+    Taper magnitude to zero above a chosen frequency.
+
+    Frequencies up to ``start_freq`` are left unchanged. Between ``start_freq``
+    and ``end_freq`` a cosine taper is applied; at and above ``end_freq`` the
+    magnitude is forced to ``floor``.
+    """
+
+    def __init__(
+        self,
+        start_freq: float,
+        end_freq: float,
+        floor: float = 0.0,
+    ):
+        super().__init__()
+        if not np.isfinite(start_freq) or start_freq < 0:
+            raise ValueError("start_freq must be finite and non-negative")
+        if not np.isfinite(end_freq):
+            raise ValueError("end_freq must be finite")
+        if end_freq <= start_freq:
+            raise ValueError("end_freq must be greater than start_freq")
+        if not np.isfinite(floor) or floor < 0:
+            raise ValueError("floor must be finite and non-negative")
+
+        self.start_freq = float(start_freq)
+        self.end_freq = float(end_freq)
+        self.floor = float(floor)
+
+    def apply(self, ff: "FormFactor") -> None:
+        f_pos = ff.grid.f_pos
+        tail_mask = f_pos > self.start_freq
+        if not np.any(tail_mask):
+            return
+
+        x = np.clip(
+            (f_pos[tail_mask] - self.start_freq)
+            / (self.end_freq - self.start_freq),
+            0.0,
+            1.0,
+        )
+        taper = self.floor + (1.0 - self.floor) * 0.5 * (1.0 + np.cos(np.pi * x))
+        ff.mag[tail_mask] *= taper
+
+
 class ReplacePhaseEndLinear(FrequencyConstraint):
     def __init__(self, grid: "Grid", start_freq: float, alpha: float):
         super().__init__()
@@ -258,15 +303,16 @@ class BlendMeasuredMagnitude(FrequencyConstraint):
                     ff.mag,
                 )
                 avg_current_mag = current_mag_at_measured_freq.mean()
+                y_source = meas.mag * avg_current_mag / self._avg_measured_mag[i]
 
             else:
-                avg_current_mag = self._avg_measured_mag[i]
+                y_source = meas.mag
 
             ff.mag = smooth_overlap(
                 x_target=ff.grid.f_pos,
                 y_target=ff.mag,
                 x_source=meas.freq,
-                y_source=meas.mag * avg_current_mag / self._avg_measured_mag[i],
+                y_source=y_source,
                 power=self.power,
                 transition_width=self.transition_width,
             )
