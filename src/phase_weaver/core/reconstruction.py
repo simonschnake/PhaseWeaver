@@ -1,6 +1,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
 
@@ -26,10 +27,9 @@ from .measurement import MeasuredFormFactor
 # from .utils import quadratic_log_extend
 from .utils import gaussian_extend, interpolate_between_functions
 
-from phase_weaver.app.state import (
-    ReconstructionState,
-    PHASE_INIT_MODE,
-)
+
+class PhaseInitState(Protocol):
+    phase_init_mode: object
 
 
 def minimum_phase_from_mag(
@@ -57,6 +57,22 @@ def minimum_phase_from_mag(
     spec = np.exp(np.fft.fft(cmin))
     phase = np.angle(spec[: N // 2 + 1])
     return np.unwrap(phase)
+
+
+def _extension_min_positive(y_source: np.ndarray) -> float:
+    """
+    Choose a small positive floor for log-space tail fitting.
+
+    The measured magnitudes are allowed to contain zeros, but the Gaussian
+    extension fits in log-space and therefore needs strictly positive values.
+    We keep the floor tiny relative to the signal scale so the initial guess
+    remains close to the measured data.
+    """
+    y_source = np.asarray(y_source, dtype=float)
+    positive_peak = float(np.max(y_source)) if y_source.size else 0.0
+    if not np.isfinite(positive_peak) or positive_peak <= 0.0:
+        return np.finfo(float).eps
+    return max(np.finfo(float).eps, positive_peak * 1e-12)
 
 
 # =============================================================================
@@ -299,7 +315,7 @@ class GerchbergSaxton(ReconstructionAlgorithm):
         self,
         grid: Grid,
         measurements: tuple[MeasuredFormFactor, ...],
-        reconstruction_state: ReconstructionState,
+        reconstruction_state: PhaseInitState,
         formfactor_input: FormFactor | None = None,
         phase_last: np.ndarray | None = None,
     ):
@@ -308,6 +324,7 @@ class GerchbergSaxton(ReconstructionAlgorithm):
         self.measurements = measurements
         self.reconstruction_state = reconstruction_state
         self.formfactor_input = formfactor_input
+        self.phase_last = phase_last
 
         self.transform = DCPhysicalRFFT(
             unwrap_phase=True,
@@ -369,13 +386,18 @@ class GerchbergSaxton(ReconstructionAlgorithm):
         self,
         grid: Grid,
         measurements: tuple[MeasuredFormFactor, ...],
-        reconstruction_state: ReconstructionState,
+        reconstruction_state: PhaseInitState,
         formfactor_input: FormFactor | None = None,
         phase_last: np.ndarray | None = None,
     ) -> FormFactor:
+        from phase_weaver.app.state import PHASE_INIT_MODE
 
+        min_positive = _extension_min_positive(measurements[0].mag)
         mag_init = gaussian_extend(
-            grid.f_pos, measurements[0].freq, measurements[0].mag
+            grid.f_pos,
+            measurements[0].freq,
+            measurements[0].mag,
+            min_positive=min_positive,
         )
         freq_left = measurements[0].freq[0]
 
@@ -387,7 +409,12 @@ class GerchbergSaxton(ReconstructionAlgorithm):
             mag_init = interpolate_between_functions(
                 grid.f_pos,
                 mag_init,
-                gaussian_extend(grid.f_pos, meas.freq, meas.mag),
+                gaussian_extend(
+                    grid.f_pos,
+                    meas.freq,
+                    meas.mag,
+                    min_positive=_extension_min_positive(meas.mag),
+                ),
                 freq_left,
                 freq_right,
             )
@@ -408,17 +435,28 @@ class GerchbergSaxton(ReconstructionAlgorithm):
             if formfactor_input is None:
                 print("Input form factor is required for REAL phase initialization")
             else:
+                if formfactor_input.phase.shape != formfactor_init.phase.shape:
+                    raise ValueError(
+                        "input form factor phase must match initialized phase shape"
+                    )
                 formfactor_init.phase[:] = formfactor_input.phase
 
         elif phase_init_mode == PHASE_INIT_MODE.MINPHASE:
             formfactor_init.phase = minimum_phase_from_mag(grid, mag_init)
 
         elif phase_init_mode == PHASE_INIT_MODE.LAST:
-            if self._phase_last is not None:
+            if phase_last is not None:
+                if phase_last.shape != formfactor_init.phase.shape:
+                    raise ValueError(
+                        "last phase must match initialized phase shape"
+                    )
                 formfactor_init.phase[:] = phase_last
             else:
                 print(
                     "Warning: no previous phase found for LAST initialization, falling back to Zero Phase"
                 )
+
+        else:
+            raise ValueError(f"unknown phase initialization mode: {phase_init_mode!r}")
 
         return formfactor_init

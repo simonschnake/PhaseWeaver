@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from phase_weaver.model import profile_model as mod
+from phase_weaver.app import state as mod
 
 def test_default_background_values():
     p = mod._default_background()
@@ -39,9 +39,9 @@ def test_default_peak2_values():
 def test_profile_model_state_defaults_and_slots():
     state = mod.ProfileModelState()
 
-    assert state.dt == 1e-16
-    assert state.t_max == 1e-13
-    assert state.charge is None
+    assert state.dt == mod.DT
+    assert state.t_max == mod.T_MAX
+    assert state.charge == mod.CHARGE_C
     assert isinstance(state.background, mod.AsymSuperGaussParams)
     assert isinstance(state.peak, mod.AsymSuperGaussParams)
     assert state.peak2_enabled is False
@@ -77,7 +77,7 @@ def test_profile_model_init_uses_default_state_and_builds_grid(monkeypatch):
     assert calls == [
         {
             "dt": 1e-16,
-            "t_max": 1e-13,
+            "t_max": 1e-12,
             "snap_pow2": True,
             "min_N": 64,
         }

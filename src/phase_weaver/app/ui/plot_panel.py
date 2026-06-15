@@ -1,7 +1,10 @@
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QVBoxLayout,
+    QWidget,
+)
 
 import numpy as np
 
@@ -12,6 +15,11 @@ from phase_weaver.app.plot_model import (
 from phase_weaver.app.utils import nm_to_thz, thz_to_nm
 
 from phase_weaver.core import CurrentProfile, FormFactor, Profile
+
+from .plot_controls_box import PlotControlsBox
+
+
+from phase_weaver.app.config import TIME_PLOT_MODE, PLOT_LINE_MODE
 
 
 class MplCanvas(FigureCanvas):
@@ -28,12 +36,18 @@ class PlotPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        self.current_normalized = False
+
         self.canvas = MplCanvas(self)
         self.canvas.setStyleSheet("background: #1e1e1e;")
         self.toolbar = NavigationToolbar(self.canvas, self)
 
+        self.plot_controls = PlotControlsBox()
+        self.plot_controls.changed.connect(self._render_from_controls)
+
         layout = QVBoxLayout(self)
         layout.addWidget(self.toolbar)
+        layout.addWidget(self.plot_controls)
         layout.addWidget(self.canvas, 1)
 
         self._create_artists()
@@ -59,6 +73,7 @@ class PlotPanel(QWidget):
 
         self._render_time()
         self._render_spectrum()
+        self._apply_line_visibility()
         self.canvas.draw_idle()
 
     def render_reconstruction(
@@ -80,6 +95,7 @@ class PlotPanel(QWidget):
         self._apply_time_axes()
         self._apply_spectrum_axes()
         self._render_fwhm()
+        self._apply_line_visibility()
         self.canvas.draw_idle()
 
     def _render_time(self) -> None:
@@ -87,9 +103,26 @@ class PlotPanel(QWidget):
             raise ValueError(
                 "Time model is not initialized. Call render_input() first."
             )
-        self.line_current.set_data(
-            self.time_model.t_ui, self.time_model.current_input_ui
-        )
+        mode = self.plot_controls.time_mode
+
+        if mode == TIME_PLOT_MODE.NORMALIZED:
+            input_y = self.time_model.current_input_ui
+            recon_y = self.time_model.current_recon_ui
+            self.canvas.ax_time.set_ylabel("Normalized distribution (1/fs)")
+        else:
+            input_y = self.time_model.current_input_ui
+            recon_y = self.time_model.current_recon_ui
+            self.canvas.ax_time.set_ylabel("Current (kA)")
+
+        self.line_current.set_data(self.time_model.t_ui, input_y)
+
+        if recon_y is not None:
+            self.line_recon.set_visible(True)
+            self.line_recon.set_data(self.time_model.t_ui, recon_y)
+        else:
+            self.line_recon.set_visible(False)
+            self.line_recon.set_data([], [])
+
         if self.time_model.current_recon_ui is not None:
             self.line_recon.set_visible(True)
             self.line_recon.set_data(
@@ -132,20 +165,30 @@ class PlotPanel(QWidget):
             raise ValueError(
                 "Time model is not initialized. Call render_input() first."
             )
-        ci_fwhm = self.time_model.current_input_fwhm
-        cr_fwhm = self.time_model.current_recon_fwhm
+
+        if self.plot_controls.time_mode == TIME_PLOT_MODE.NORMALIZED:
+            ci_fwhm = self.time_model.normalized_input_fwhm
+            cr_fwhm = self.time_model.normalized_recon_fwhm
+        else:
+            ci_fwhm = self.time_model.current_input_fwhm
+            cr_fwhm = self.time_model.current_recon_fwhm
+
+        visible_lines = self.plot_controls.visible_lines
+
+        show_input_times = PLOT_LINE_MODE.CURRENT_INPUT in visible_lines
+        show_recon_times = PLOT_LINE_MODE.CURRENT_RECON in visible_lines
 
         if ci_fwhm is not None:
             self.line_fwhm_input.set_data(
                 [ci_fwhm.left_half_max, ci_fwhm.right_half_max],
                 [ci_fwhm.half_max_value, ci_fwhm.half_max_value],
             )
-            self.line_fwhm_input.set_visible(True)
+            self.line_fwhm_input.set_visible(show_input_times)
             self.line_fwhm_input_caps.set_data(
                 [ci_fwhm.left_half_max, ci_fwhm.right_half_max],
                 [ci_fwhm.half_max_value, ci_fwhm.half_max_value],
             )
-            self.line_fwhm_input_caps.set_visible(True)
+            self.line_fwhm_input_caps.set_visible(show_input_times)
             self.text_fwhm_input.set_text(f"Input FWHM: {ci_fwhm.fwhm:.2f} fs")
         else:
             self.line_fwhm_input.set_visible(False)
@@ -157,17 +200,30 @@ class PlotPanel(QWidget):
                 [cr_fwhm.left_half_max, cr_fwhm.right_half_max],
                 [cr_fwhm.half_max_value, cr_fwhm.half_max_value],
             )
-            self.line_fwhm_recon.set_visible(True)
+            self.line_fwhm_recon.set_visible(show_recon_times)
             self.line_fwhm_recon_caps.set_data(
                 [cr_fwhm.left_half_max, cr_fwhm.right_half_max],
                 [cr_fwhm.half_max_value, cr_fwhm.half_max_value],
             )
-            self.line_fwhm_recon_caps.set_visible(True)
+            self.line_fwhm_recon_caps.set_visible(show_recon_times)
             self.text_fwhm_recon.set_text(f"Reconstructed FWHM: {cr_fwhm.fwhm:.2f} fs")
         else:
             self.line_fwhm_recon.set_visible(False)
             self.line_fwhm_recon_caps.set_visible(False)
             self.text_fwhm_recon.set_text("Reconstructed FWHM: n/a")
+
+    def _render_from_controls(self) -> None:
+        if self.time_model is not None:
+            self._render_time()
+            self._apply_time_axes()
+            self._render_fwhm()
+
+        if self.spectrum_model is not None:
+            self._render_spectrum()
+            self._apply_spectrum_axes()
+
+        self._apply_line_visibility()
+        self.canvas.draw_idle()
 
     def _apply_time_axes(self) -> None:
         model = self.time_model
@@ -203,7 +259,34 @@ class PlotPanel(QWidget):
         self.canvas.ax_mag.autoscale_view(scalex=False, scaley=True)
 
         self.canvas.ax_phase.relim()
-        self.canvas.ax_phase.autoscale_view(scalex=False, scaley=True) 
+        self.canvas.ax_phase.autoscale_view(scalex=False, scaley=True)
+
+    def _apply_line_visibility(self) -> None:
+        visible = self.plot_controls.visible_lines
+
+        self.line_current.set_visible(PLOT_LINE_MODE.CURRENT_INPUT in visible)
+
+        self.line_recon.set_visible(
+            PLOT_LINE_MODE.CURRENT_RECON in visible
+            and self.time_model is not None
+            and self.time_model.current_recon_ui is not None
+        )
+
+        self.line_mag.set_visible(PLOT_LINE_MODE.MAG_INPUT in visible)
+
+        self.line_mag_recon.set_visible(
+            PLOT_LINE_MODE.MAG_RECON in visible
+            and self.spectrum_model is not None
+            and self.spectrum_model.mag_recon_ui is not None
+        )
+
+        self.line_phase_in.set_visible(PLOT_LINE_MODE.PHASE_INPUT in visible)
+
+        self.line_phase_recon.set_visible(
+            PLOT_LINE_MODE.PHASE_RECON in visible
+            and self.spectrum_model is not None
+            and self.spectrum_model.phase_recon_ui is not None
+        )
 
     def _create_artists(self):
         (self.line_current,) = self.canvas.ax_time.plot(

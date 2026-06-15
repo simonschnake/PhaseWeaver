@@ -96,6 +96,22 @@ class TimePlotModel:
             return None
 
     @property
+    def normalized_input_ui(self) -> np.ndarray:
+        return self.profile_input.values[self._mask]
+
+    @property
+    def normalized_recon_ui(self) -> np.ndarray | None:
+        return (
+            self.profile_recon.values[self._mask]
+            if self.profile_recon is not None
+            else None
+        )
+
+    @property
+    def normalized_input_fwhm(self) -> FWHMResult | None:
+        return fwhm_highest_peak(self.t_ui, self.normalized_input_ui)
+
+    @property
     def current_input_fwhm(self) -> FWHMResult | None:
         return fwhm_highest_peak(self.t_ui, self.current_input_ui)
 
@@ -103,6 +119,13 @@ class TimePlotModel:
     def current_recon_fwhm(self) -> FWHMResult | None:
         if self.current_recon_ui is not None:
             return fwhm_highest_peak(self.t_ui, self.current_recon_ui)
+        else:
+            return None
+
+    @property
+    def normalized_recon_fwhm(self) -> FWHMResult | None:
+        if self.normalized_recon_ui is not None:
+            return fwhm_highest_peak(self.t_ui, self.normalized_recon_ui)
         else:
             return None
 

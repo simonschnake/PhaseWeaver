@@ -140,16 +140,14 @@ def test_raises_when_no_left_crossing_exists():
     x = np.array([0, 1, 2, 3], dtype=float)
     y = np.array([5, 4, 2, 0], dtype=float)  # peak is at first point
 
-    with pytest.raises(ValueError, match="No left half-maximum crossing found."):
-        fwhm_highest_peak(x, y)
+    assert fwhm_highest_peak(x, y) is None
 
 
 def test_raises_when_no_right_crossing_exists():
     x = np.array([0, 1, 2, 3], dtype=float)
     y = np.array([0, 2, 4, 5], dtype=float)  # peak is at last point
 
-    with pytest.raises(ValueError, match="No right half-maximum crossing found."):
-        fwhm_highest_peak(x, y)
+    assert fwhm_highest_peak(x, y) is None
 
 
 def test_overlap_weights_raises_for_non_1d_x_target():
