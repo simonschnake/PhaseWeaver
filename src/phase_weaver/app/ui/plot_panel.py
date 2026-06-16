@@ -28,7 +28,9 @@ from phase_weaver.app.logic import LoadedMeasurement
 
 class MplCanvas(FigureCanvas):
     def __init__(self, parent=None):
-        fig = Figure(constrained_layout=True)
+        # Keep the embedded GUI figure at a screen-friendly DPI even when the
+        # active Matplotlib style sheet prefers notebook-sized figures.
+        fig = Figure(constrained_layout=True, dpi=100)
         self.ax_time = fig.add_subplot(1, 2, 1)
         self.ax_mag = fig.add_subplot(1, 2, 2)
         self.ax_phase = self.ax_mag.twinx()
