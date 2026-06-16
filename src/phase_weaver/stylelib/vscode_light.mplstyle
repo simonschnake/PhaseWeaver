@@ -40,5 +40,5 @@ legend.edgecolor       : "#d0d0d0"
 legend.frameon         : True
 legend.framealpha      : 0.95
 
-# Color cycle (VS Code / Atom flavored light-theme contrast)
-axes.prop_cycle        : cycler(color=["#007acc", "#b58900", "#d73a49", "#22863a", "#6f42c1", "#e36209"])
+# Color cycle (colorblind-friendly, high-contrast palette)
+axes.prop_cycle        : cycler(color=["#4E79A7", "#F28E2B", "#B07AA1", "#76B7B2", "#EDC948", "#9C755F", "#BAB0AC"])

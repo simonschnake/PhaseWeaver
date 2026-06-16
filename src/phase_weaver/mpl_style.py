@@ -8,6 +8,17 @@ from importlib import resources
 from phase_weaver.qt_theme import APP_THEME
 
 
+COLORBLIND_FRIENDLY_CYCLE = (
+    "#4E79A7",  # blue
+    "#F28E2B",  # orange
+    "#B07AA1",  # purple
+    "#76B7B2",  # teal
+    "#EDC948",  # yellow
+    "#9C755F",  # brown
+    "#BAB0AC",  # gray
+)
+
+
 MPL_STYLE_FILES = {
     APP_THEME.DARK: "vscode_dark.mplstyle",
     APP_THEME.LIGHT: "vscode_light.mplstyle",
@@ -65,6 +76,7 @@ def sync_mpl_to_qt(app, fig=None, scale: float = 0.95) -> None:
     """
     family = app.font().family()
     pt = _qt_font_point_size(app) * scale
+    mpl.rcParams["axes.prop_cycle"] = mpl.cycler(color=COLORBLIND_FRIENDLY_CYCLE)
 
     # --- Font family/size defaults ---
     mpl.rcParams["font.family"] = "sans-serif"

@@ -40,5 +40,5 @@ legend.edgecolor       : "#444444"
 legend.frameon         : True
 legend.framealpha      : 0.9
 
-# Color cycle (soft but vivid tones)
-axes.prop_cycle        : cycler(color=["#4FC3F7", "#FFCA28", "#E57373", "#81C784", "#BA68C8", "#F06292"])
+# Color cycle (colorblind-friendly, high-contrast palette)
+axes.prop_cycle        : cycler(color=["#4E79A7", "#F28E2B", "#B07AA1", "#76B7B2", "#EDC948", "#9C755F", "#BAB0AC"])

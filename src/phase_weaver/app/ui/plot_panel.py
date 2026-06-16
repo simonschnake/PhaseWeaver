@@ -18,6 +18,7 @@ from phase_weaver.app.utils import nm_to_thz, thz_to_nm
 from phase_weaver.qt_theme import APP_THEME
 
 from phase_weaver.core import CurrentProfile, FormFactor, Profile
+from phase_weaver.mpl_style import COLORBLIND_FRIENDLY_CYCLE
 
 from .plot_controls_box import PlotControlsBox
 
@@ -440,9 +441,12 @@ class PlotPanel(QWidget):
         self.ax_lambda.set_xticks([1000, 1500, 2000, 3000, 10000])
 
     def _apply_theme_to_plot(self) -> None:
-        colors = mpl.rcParams["axes.prop_cycle"].by_key().get("color", [])
+        colors = list(COLORBLIND_FRIENDLY_CYCLE)
+        rc_colors = mpl.rcParams["axes.prop_cycle"].by_key().get("color", [])
+        if len(rc_colors) >= 4:
+            colors = list(rc_colors)
         if len(colors) < 4:
-            colors = ["C0", "C1", "C2", "C3"]
+            colors = ["#4E79A7", "#F28E2B", "#B07AA1", "#76B7B2"]
 
         facecolor = mpl.rcParams["axes.facecolor"]
         figure_facecolor = mpl.rcParams["figure.facecolor"]
@@ -478,8 +482,8 @@ class PlotPanel(QWidget):
         self.line_current.set_color(colors[0])
         self.line_recon.set_color(colors[1])
         self.line_mag.set_color(colors[0])
-        self.line_mag_recon.set_color(colors[2])
-        self.line_phase_in.set_color(colors[1])
+        self.line_mag_recon.set_color(colors[1])
+        self.line_phase_in.set_color(colors[2])
         self.line_phase_recon.set_color(colors[3])
 
         self.line_fwhm_input.set_color(colors[0])
