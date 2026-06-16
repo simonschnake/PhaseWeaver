@@ -18,6 +18,7 @@ class ControlsPanel(QWidget):
     export_requested = Signal()
     measurements_load_requested = Signal()
     reconstruction_requested = Signal()
+    reconstruction_auto_toggled = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -101,6 +102,15 @@ class ControlsPanel(QWidget):
         )
         recon_col.addWidget(self.load_measurements_button)
 
+        self.auto_reconstruct_button = QPushButton("Auto Reconstruction: On")
+        self.auto_reconstruct_button.setCheckable(True)
+        self.auto_reconstruct_button.setChecked(True)
+        self.auto_reconstruct_button.toggled.connect(self._update_auto_button_text)
+        self.auto_reconstruct_button.toggled.connect(
+            self.reconstruction_auto_toggled.emit
+        )
+        recon_col.addWidget(self.auto_reconstruct_button)
+
         self.reconstruct_button = QPushButton("Run Reconstruction")
         self.reconstruct_button.clicked.connect(self.reconstruction_requested.emit)
         recon_col.addWidget(self.reconstruct_button)
@@ -155,4 +165,12 @@ class ControlsPanel(QWidget):
             scenario=self.get_scenario_state(),
             measurement=self.get_measurement_state(),
             reconstruction=self.get_reconstruction_state(),
+        )
+
+    def is_auto_reconstruction_enabled(self) -> bool:
+        return self.auto_reconstruct_button.isChecked()
+
+    def _update_auto_button_text(self, enabled: bool) -> None:
+        self.auto_reconstruct_button.setText(
+            "Auto Reconstruction: On" if enabled else "Auto Reconstruction: Off"
         )

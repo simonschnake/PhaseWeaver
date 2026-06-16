@@ -30,6 +30,9 @@ class MainWindow(QMainWindow):
         self.plot_panel: PlotPanel = PlotPanel(theme=theme)
 
         self.controls_panel = ControlsPanel()
+        self.reconstruct_timer = QTimer(self)
+        self.reconstruct_timer.setSingleShot(True)
+        self.reconstruct_timer.timeout.connect(self.run_reconstruction_requested)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -53,6 +56,9 @@ class MainWindow(QMainWindow):
         self.controls_panel.measurements_load_requested.connect(
             self.load_measurements_requested
         )
+        self.controls_panel.reconstruction_auto_toggled.connect(
+            self.reconstruction_auto_toggled
+        )
         self.controls_panel.reconstruction_requested.connect(
             self.run_reconstruction_requested
         )
@@ -62,7 +68,7 @@ class MainWindow(QMainWindow):
         self.redraw_timer.timeout.connect(self.redraw_input)
 
         self._create_menus()
-        self.redraw_input()
+        self.schedule_updates()
         self.update_summary(self.logic.reconstruction_summary)
 
     def _create_menus(self) -> None:
@@ -126,10 +132,20 @@ class MainWindow(QMainWindow):
 
     def schedule_updates(self) -> None:
         self.redraw_timer.start(10)
+        self.reconstruct_timer.stop()
         if self.logic.reconstruction_summary.status == "finished":
             self.logic.reconstruction_summary.status = "stale"
         self.plot_panel.clear_reconstruction()
         self.update_summary(self.logic.reconstruction_summary)
+        if self.controls_panel.is_auto_reconstruction_enabled():
+            self.reconstruct_timer.start(200)
+
+    def reconstruction_auto_toggled(self, enabled: bool) -> None:
+        if enabled:
+            self.schedule_updates()
+        else:
+            self.reconstruct_timer.stop()
+            self.update_summary(self.logic.reconstruction_summary)
 
     def redraw_input(self) -> None:
         state = self.controls_panel.get_state()
@@ -188,14 +204,12 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            measurements = self.logic.load_measurements(path)
+            self.logic.load_measurements(path)
         except Exception as exc:
             QMessageBox.critical(self, "Could not load measurements", str(exc))
             return
 
-        self.plot_panel.clear_reconstruction()
-        self.plot_panel.render_measurements(measurements)
-        self.update_summary(self.logic.reconstruction_summary)
+        self.schedule_updates()
 
     def export_requested(self) -> None:
         path, _ = QFileDialog.getSaveFileName(

@@ -1,12 +1,12 @@
 # PhaseWeaver Project State
 
-Last updated: 2026-06-15
+Last updated: 2026-06-16
 
 ## Executive Summary
 
 PhaseWeaver is currently a small Python/PySide6 scientific workbench for exploring current-profile reconstruction from form-factor magnitude data. The app can generate a configurable time-domain current profile, compute its spectrum magnitude and phase, simulate partial measurements, and run a Gerchberg-Saxton-style magnitude-only reconstruction.
 
-The project is functional enough that the full pytest suite passes and the Qt main window can be constructed in an offscreen smoke test. The last-phase reconstruction bug has been fixed, the first experiment-use workflow is in place, and the plots now render correctly on initial load instead of only after running reconstruction once.
+The project is functional enough that the full pytest suite passes and the Qt main window can be constructed in an offscreen smoke test. The last-phase reconstruction bug has been fixed, the first experiment-use workflow is in place, and the plots now render correctly on initial load instead of only after running reconstruction once. Recent work also added theme switching, reconstruction history capture, a colorblind-friendly plot palette, and some layout/DPI polish.
 
 The next work should focus on validating this workflow with real experiment files, then tightening the remaining stale UI and static-tool drift.
 
@@ -45,8 +45,9 @@ If the goal is to use PhaseWeaver for experiment operation in the next week, the
 
 - Branch: `main`
 - Tracking: `origin/main`
-- Latest commit: `e55073f fix initial plot rendering`
-- Worktree state: dirty
+- Local status: `main` is ahead of `origin/main` by 12 commits
+- Latest commit: `dd5356a Save current work`
+- Worktree state: clean
 - Package version: `0.4.0`
 - Python package layout: `src/phase_weaver`
 - Main executable: `phase_weaver = phase_weaver.app:main`
@@ -60,22 +61,7 @@ If the goal is to use PhaseWeaver for experiment operation in the next week, the
 
 Current notable uncommitted paths:
 
-- Modified:
-  - `notebooks/scratch.ipynb`
-  - `src/phase_weaver/app/config.py`
-  - `src/phase_weaver/app/plot_model.py`
-  - `src/phase_weaver/app/ui/plot_panel.py`
-  - `src/phase_weaver/core/reconstruction.py`
-  - `tests/core/test_base.py`
-  - `tests/core/test_constraints.py`
-  - `tests/core/test_reconstruction.py`
-  - `tests/core/test_utils.py`
-  - `tests/model/test_profile_model.py`
-- Untracked:
-  - `Makefile`
-  - `scripts/reconstruction_dev.py`
-  - `src/phase_weaver/app/ui/plot_controls_box.py`
-  - `.tmp-mpl/`
+- None. The worktree is currently clean.
 
 ## What The App Does Today
 
@@ -132,7 +118,8 @@ Important modules:
 - `src/phase_weaver/app/ui/`
   - Contains Qt widgets for controls and plots.
   - The current controls panel uses generic option selector widgets for phase init and measurement source selection.
-  - `plot_controls_box.py` now keeps only line-visibility controls; normalized time plotting is not exposed.
+  - `plot_controls_box.py` keeps only line-visibility controls; normalized time plotting is not exposed.
+  - Reconstruction history is preserved in-memory and exported alongside the main arrays, which makes the latest reconstruction runs easier to inspect later.
 
 ## Verification Results
 
@@ -219,12 +206,20 @@ Likely next decision:
 
 `plot_controls_box.py` now controls line visibility only, and it sits to the left of the plots. The normalized time mode is no longer exposed in the active UI.
 
+### 4. Recent Plot Polish Landed
+
+The latest local commits focused on plot readability and layout stability:
+
+- theme switching no longer disturbs the plot layout
+- embedded plot DPI is fixed
+- plot colors are adjusted for better colorblind friendliness
+
 Remaining polish:
 
 - The old `TIME_PLOT_MODE.NORMALIZED` enum still exists in config but is not reachable from the GUI.
 - A later cleanup can remove the unused enum and normalized plot-model helpers.
 
-### 4. Lint And Type Checking Are Not Clean
+### 5. Lint And Type Checking Are Not Clean
 
 The project has working runtime tests, but the static tooling reports a lot of noise. Some issues are harmless typing friction around PySide6 stubs; others are real drift from refactors.
 
@@ -240,7 +235,7 @@ Lower-priority/static-noise issues:
 - Tests that intentionally instantiate abstract classes inside `pytest.raises`.
 - Tests that intentionally assign to slotted dataclasses to verify slot behavior.
 
-### 5. App/Core Boundaries Are Blurred
+### 6. App/Core Boundaries Are Blurred
 
 `core/reconstruction.py` imports `PHASE_INIT_MODE` from `phase_weaver.app.state` inside a method, so the reconstruction layer still reaches into app state for one of its mode enums.
 
@@ -255,7 +250,7 @@ Better direction:
 - Keep app-specific widgets and config conversion in `app`.
 - Let `core` accept primitive or core-owned enums.
 
-### 6. Developer Artifacts Need Sorting
+### 7. Developer Artifacts Need Sorting
 
 Current artifacts that should be intentionally handled:
 
