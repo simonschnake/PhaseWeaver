@@ -329,6 +329,7 @@ class PlotPanel(QWidget):
             raise ValueError("Time model is not initialized. Call render_input() first.")
 
         visible_lines = self.plot_controls.visible_lines
+        show_fwhm = self.plot_controls.show_fwhm
         show_input_times = PLOT_LINE_MODE.CURRENT_INPUT in visible_lines
         show_recon_times = PLOT_LINE_MODE.CURRENT_RECON in visible_lines
 
@@ -338,7 +339,7 @@ class PlotPanel(QWidget):
             self.line_fwhm_input_caps,
             self.text_fwhm_input,
             "Input FWHM",
-            show_input_times,
+            show_fwhm and show_input_times,
         )
         self._set_fwhm_items(
             self.time_model.current_recon_fwhm,
@@ -346,9 +347,10 @@ class PlotPanel(QWidget):
             self.line_fwhm_recon_caps,
             self.text_fwhm_recon,
             "Reconstructed FWHM",
-            show_recon_times,
+            show_fwhm and show_recon_times,
         )
-        self._position_fwhm_labels()
+        if show_fwhm:
+            self._position_fwhm_labels()
 
     def _render_from_controls(self) -> None:
         if self.time_model is not None:
@@ -556,7 +558,7 @@ class PlotPanel(QWidget):
             text.setText(f"{label}: n/a")
             line.setVisible(False)
             caps.setVisible(False)
-            text.setVisible(True)
+            text.setVisible(visible)
             return
 
         x0 = float(fwhm.left_half_max)
@@ -571,7 +573,7 @@ class PlotPanel(QWidget):
         text.setText(f"{label}: {fwhm.fwhm:.2f} fs")
         line.setVisible(visible)
         caps.setVisible(visible)
-        text.setVisible(True)
+        text.setVisible(visible)
 
     def _fwhm_cap_height(self) -> float:
         (_, _), (y0, y1) = self.canvas.time_plot.getViewBox().viewRange()

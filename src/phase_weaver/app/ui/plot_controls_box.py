@@ -11,6 +11,10 @@ class PlotControlsBox(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._line_actions: dict[cfg.PLOT_LINE_MODE, QAction] = {}
+        self._fwhm_action = QAction("FWHM", self)
+        self._fwhm_action.setCheckable(True)
+        self._fwhm_action.setChecked(False)
+        self._fwhm_action.toggled.connect(lambda _checked: self._line_visibility_changed())
 
         for mode in cfg.PLOT_LINE_MODE:
             action = QAction(str(mode.value), self)
@@ -30,6 +34,14 @@ class PlotControlsBox(QWidget):
     @property
     def line_actions(self) -> dict[cfg.PLOT_LINE_MODE, QAction]:
         return self._line_actions
+
+    @property
+    def fwhm_action(self) -> QAction:
+        return self._fwhm_action
+
+    @property
+    def show_fwhm(self) -> bool:
+        return self._fwhm_action.isChecked()
 
     def show_all_lines(self) -> None:
         for action in self._line_actions.values():

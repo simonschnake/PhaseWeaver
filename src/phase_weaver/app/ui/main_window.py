@@ -69,6 +69,9 @@ class MainWindow(QMainWindow):
         view_menu = self.menuBar().addMenu("View")
         theme_menu = view_menu.addMenu("Theme")
         lines_menu = view_menu.addMenu("Lines")
+        self.fwhm_action = self.plot_panel.plot_controls.fwhm_action
+        view_menu.addAction(self.fwhm_action)
+        view_menu.addSeparator()
 
         self.theme_action_group = QActionGroup(self)
         self.theme_action_group.setExclusive(True)

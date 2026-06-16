@@ -110,6 +110,33 @@ def test_plot_panel_legend_follows_line_visibility():
     assert "phase (recon)" in panel.canvas.spectrum_legend.labels
 
 
+def test_plot_panel_fwhm_is_hidden_by_default_and_toggles_on():
+    _app()
+    panel = PlotPanel()
+    profile, formfactor = _plot_inputs()
+    panel.render_input(profile, formfactor)
+    panel.render_reconstruction(profile, formfactor)
+
+    assert not panel.plot_controls.show_fwhm
+    assert not panel.line_fwhm_input.isVisible()
+    assert not panel.line_fwhm_recon.isVisible()
+    assert not panel.line_fwhm_input_caps.isVisible()
+    assert not panel.line_fwhm_recon_caps.isVisible()
+    assert not panel.text_fwhm_input.isVisible()
+    assert not panel.text_fwhm_recon.isVisible()
+    assert "FWHM" not in " ".join(panel.canvas.time_legend.labels)
+
+    panel.plot_controls.fwhm_action.setChecked(True)
+
+    assert panel.line_fwhm_input.isVisible()
+    assert panel.line_fwhm_recon.isVisible()
+    assert panel.line_fwhm_input_caps.isVisible()
+    assert panel.line_fwhm_recon_caps.isVisible()
+    assert panel.text_fwhm_input.isVisible()
+    assert panel.text_fwhm_recon.isVisible()
+    assert "FWHM" not in " ".join(panel.canvas.time_legend.labels)
+
+
 def test_plot_panel_theme_switch_keeps_items():
     _app()
     panel = PlotPanel(theme=APP_THEME.DARK)
