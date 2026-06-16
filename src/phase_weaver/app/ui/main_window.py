@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from phase_weaver.mpl_style import apply_mpl_style, sync_mpl_to_qt
 from phase_weaver.qt_theme import APP_THEME, set_app_theme
 
 from ..logic import AppLogic, ReconstructionSummary
@@ -110,8 +109,6 @@ class MainWindow(QMainWindow):
 
         self.theme = theme
         set_app_theme(app, theme)
-        apply_mpl_style(theme)
-        sync_mpl_to_qt(app, self.plot_panel.canvas.figure)
         self.plot_panel.set_theme(theme)
         self.theme_actions[theme].setChecked(True)
         central = self.centralWidget()

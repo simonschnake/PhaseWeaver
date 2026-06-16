@@ -1,6 +1,6 @@
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QWidget
 
 import phase_weaver.app.config as cfg
 
@@ -10,7 +10,6 @@ class PlotControlsBox(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMaximumWidth(100)
         self._line_actions: dict[cfg.PLOT_LINE_MODE, QAction] = {}
 
         for mode in cfg.PLOT_LINE_MODE:
@@ -19,14 +18,6 @@ class PlotControlsBox(QWidget):
             action.setChecked(mode in cfg.PLOT_LINE_MODE_DEFAULT)
             action.toggled.connect(lambda _checked: self._line_visibility_changed())
             self._line_actions[mode] = action
-
-        self.show_all_button = QPushButton("All")
-        self.show_all_button.clicked.connect(self.show_all_lines)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.addWidget(self.show_all_button)
-        layout.addStretch(1)
 
     @property
     def visible_lines(self) -> set[cfg.PLOT_LINE_MODE]:

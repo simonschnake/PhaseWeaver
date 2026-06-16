@@ -1,42 +1,181 @@
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qt import NavigationToolbar2QT as NavigationToolbar
-from matplotlib.figure import Figure
-import matplotlib as mpl
-from PySide6.QtWidgets import (
-    QHBoxLayout,
-    QVBoxLayout,
-    QWidget,
-)
+from __future__ import annotations
+
+import math
 
 import numpy as np
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QBrush, QColor, QPen
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+import pyqtgraph as pg
 
-from phase_weaver.app.plot_model import (
-    SpectrumPlotModel,
-    TimePlotModel,
-)
-from phase_weaver.app.utils import nm_to_thz, thz_to_nm
-from phase_weaver.qt_theme import APP_THEME
-
+from phase_weaver.app.config import PLOT_LINE_MODE
+from phase_weaver.app.logic import LoadedMeasurement
+from phase_weaver.app.plot_model import SpectrumPlotModel, TimePlotModel
+from phase_weaver.app.plot_theme import COLORBLIND_FRIENDLY_CYCLE, PLOT_THEMES
+from phase_weaver.app.utils import thz_to_nm
 from phase_weaver.core import CurrentProfile, FormFactor, Profile
-from phase_weaver.mpl_style import COLORBLIND_FRIENDLY_CYCLE
+from phase_weaver.qt_theme import APP_THEME
 
 from .plot_controls_box import PlotControlsBox
 
 
-from phase_weaver.app.config import PLOT_LINE_MODE
-from phase_weaver.app.logic import LoadedMeasurement
+MIN_LOG_MAG = 1e-12
+LINE_WIDTH = 5
+FWHM_WIDTH = 6
+CAP_WIDTH = 4
+
+pg.setConfigOptions(antialias=True)
 
 
-class MplCanvas(FigureCanvas):
+class LegendStrip(QWidget):
     def __init__(self, parent=None):
-        # Keep the embedded GUI figure at a screen-friendly DPI even when the
-        # active Matplotlib style sheet prefers notebook-sized figures.
-        fig = Figure(constrained_layout=True, dpi=100)
-        self.ax_time = fig.add_subplot(1, 2, 1)
-        self.ax_mag = fig.add_subplot(1, 2, 2)
-        self.ax_phase = self.ax_mag.twinx()
-        super().__init__(fig)
-        self.setParent(parent)
+        super().__init__(parent)
+        self.labels: list[str] = []
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 4)
+        self._layout.setSpacing(12)
+        self._layout.addStretch(1)
+
+    def set_items(
+        self,
+        items: list[tuple[str, str, Qt.PenStyle, bool]],
+        background: str,
+        text_color: str,
+    ) -> None:
+        self.labels = [label for label, *_ in items]
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        self.setStyleSheet(f"background: {background};")
+        for label, color, style, marker in items:
+            self._layout.addWidget(
+                self._make_item(label, color, style, marker, background, text_color)
+            )
+        self._layout.addStretch(1)
+
+    def _make_item(
+        self,
+        label: str,
+        color: str,
+        style: Qt.PenStyle,
+        marker: bool,
+        background: str,
+        text_color: str,
+    ) -> QWidget:
+        item = QWidget(self)
+        layout = QHBoxLayout(item)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+
+        swatch = QLabel("●" if marker else "", item)
+        swatch.setFixedSize(34, 14)
+        if marker:
+            swatch.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            swatch.setStyleSheet(
+                f"color: {color}; background: {background}; font-size: 13px;"
+            )
+        else:
+            border_style = "dashed" if style == Qt.PenStyle.DashLine else "solid"
+            swatch.setStyleSheet(
+                "QLabel {"
+                f"background: {background};"
+                f"border-bottom: {LINE_WIDTH}px {border_style} {color};"
+                "}"
+            )
+
+        text = QLabel(label, item)
+        text.setStyleSheet(f"color: {text_color}; background: {background};")
+        layout.addWidget(swatch)
+        layout.addWidget(text)
+        return item
+
+
+class LambdaAxis(pg.AxisItem):
+    def tickStrings(self, values, scale, spacing):  # noqa: N802
+        labels = []
+        for value in values:
+            wavelength = thz_to_nm(float(value))
+            if np.isfinite(wavelength) and wavelength > 0:
+                labels.append(f"{wavelength:.0f}")
+            else:
+                labels.append("")
+        return labels
+
+
+class LogMagnitudeAxis(pg.AxisItem):
+    def tickStrings(self, values, scale, spacing):  # noqa: N802
+        labels = []
+        for value in values:
+            magnitude = 10 ** float(value)
+            if not np.isfinite(magnitude):
+                labels.append("")
+            elif magnitude >= 1e-2:
+                labels.append(f"{magnitude:g}")
+            else:
+                labels.append(f"{magnitude:.0e}")
+        return labels
+
+
+class PlotCanvas(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.time_plot = pg.PlotWidget()
+        self.spectrum_plot = pg.PlotWidget(
+            axisItems={"left": LogMagnitudeAxis("left"), "top": LambdaAxis("top")}
+        )
+        self.phase_view = pg.ViewBox()
+        self.time_legend = LegendStrip()
+        self.spectrum_legend = LegendStrip()
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        time_col = QVBoxLayout()
+        time_col.setContentsMargins(0, 0, 0, 0)
+        time_col.setSpacing(0)
+        time_col.addWidget(self.time_legend)
+        time_col.addWidget(self.time_plot, 1)
+
+        spectrum_col = QVBoxLayout()
+        spectrum_col.setContentsMargins(0, 0, 0, 0)
+        spectrum_col.setSpacing(0)
+        spectrum_col.addWidget(self.spectrum_legend)
+        spectrum_col.addWidget(self.spectrum_plot, 1)
+
+        layout.addLayout(time_col, 1)
+        layout.addLayout(spectrum_col, 1)
+
+        self._configure_axes()
+
+    def _configure_axes(self) -> None:
+        self.time_plot.setLabel("bottom", "t", units="fs")
+        self.time_plot.setLabel("left", "Current", units="kA")
+        self.time_plot.showGrid(x=False, y=False)
+
+        plot_item = self.spectrum_plot.getPlotItem()
+        plot_item.setLabel("bottom", "f", units="THz")
+        plot_item.setLabel("left", "|F(f)|")
+        plot_item.setLabel("right", "phase", units="rad")
+        plot_item.setLabel("top", "lambda", units="nm")
+        plot_item.showAxis("top")
+        plot_item.showAxis("right")
+        plot_item.showGrid(x=False, y=False)
+
+        plot_item.scene().addItem(self.phase_view)
+        plot_item.getAxis("right").linkToView(self.phase_view)
+        self.phase_view.setXLink(plot_item.vb)
+        plot_item.vb.sigResized.connect(self._sync_phase_view)
+        self._sync_phase_view()
+
+    def _sync_phase_view(self) -> None:
+        plot_item = self.spectrum_plot.getPlotItem()
+        self.phase_view.setGeometry(plot_item.vb.sceneBoundingRect())
+        self.phase_view.linkedViewChanged(plot_item.vb, self.phase_view.XAxis)
 
 
 class PlotPanel(QWidget):
@@ -44,29 +183,22 @@ class PlotPanel(QWidget):
         super().__init__(parent)
         self.theme = theme
 
-        self.canvas = MplCanvas(self)
-        self.toolbar = NavigationToolbar(self.canvas, self)
-
-        self.plot_controls = PlotControlsBox()
+        self.canvas = PlotCanvas(self)
+        self.plot_controls = PlotControlsBox(self)
         self.plot_controls.changed.connect(self._render_from_controls)
 
-        plot_col = QVBoxLayout()
-        plot_col.addWidget(self.toolbar)
-        plot_col.addWidget(self.canvas, 1)
-
         layout = QHBoxLayout(self)
-        layout.addWidget(self.plot_controls)
-        layout.addLayout(plot_col, 1)
+        layout.addWidget(self.canvas, 1)
 
         self.time_model: TimePlotModel | None = None
         self.spectrum_model: SpectrumPlotModel | None = None
-        self.measurement_lines = []
+        self.measurement_lines: list[pg.PlotDataItem] = []
+        self.measurement_labels: list[str] = []
 
         self._create_artists()
         self._style_axes()
         self.set_theme(theme)
-
-        self.canvas.ax_mag.set_xlim(0.0, 333.0)  # up to 333 THz (900 nm) by default
+        self.canvas.spectrum_plot.setXRange(0.0, 333.0, padding=0.0)
 
     def render_input(self, prof_input: Profile, formfactor_input: FormFactor):
         if self.time_model is None:
@@ -87,15 +219,13 @@ class PlotPanel(QWidget):
         self._apply_spectrum_axes()
         self._render_fwhm()
         self._apply_line_visibility()
-        self.canvas.draw_idle()
+        self.refresh_canvas()
 
     def render_reconstruction(
         self, prof_recon: Profile | None, formfactor_recon: FormFactor | None
     ):
         if self.time_model is None:
-            raise ValueError(
-                "Time model is not initialized. Call render_input() first."
-            )
+            raise ValueError("Time model is not initialized. Call render_input() first.")
         if self.spectrum_model is None:
             raise ValueError(
                 "Spectrum model is not initialized. Call render_input() first."
@@ -109,7 +239,7 @@ class PlotPanel(QWidget):
         self._apply_spectrum_axes()
         self._render_fwhm()
         self._apply_line_visibility()
-        self.canvas.draw_idle()
+        self.refresh_canvas()
 
     def clear_reconstruction(self) -> None:
         if self.time_model is not None:
@@ -123,30 +253,33 @@ class PlotPanel(QWidget):
             self._apply_spectrum_axes()
             self._render_fwhm()
             self._apply_line_visibility()
-            self.canvas.draw_idle()
+            self.refresh_canvas()
 
     def render_measurements(
         self, measurements: tuple[LoadedMeasurement, ...] = ()
     ) -> None:
         for line in self.measurement_lines:
-            line.remove()
+            self.canvas.spectrum_plot.removeItem(line)
         self.measurement_lines = []
+        self.measurement_labels = []
 
-        for item in measurements:
-            (line,) = self.canvas.ax_mag.plot(
+        colors = self._colors()
+        for index, item in enumerate(measurements):
+            color = colors[(index + 4) % len(colors)]
+            line = self.canvas.spectrum_plot.plot(
                 item.measured.freq * 1e-12,
-                item.measured.mag,
-                linestyle="None",
-                marker="o",
-                markersize=3,
-                alpha=0.75,
-                label=item.label,
+                self._log_mag(item.measured.mag),
+                pen=None,
+                symbol="o",
+                symbolSize=9,
+                symbolPen=pg.mkPen(color, width=2),
+                symbolBrush=pg.mkBrush(color),
             )
             self.measurement_lines.append(line)
+            self.measurement_labels.append(item.label)
 
-        self.canvas.ax_mag.legend(loc="upper left", fontsize="small")
-        self._apply_theme_to_plot()
-        self.canvas.draw_idle()
+        self._refresh_legend_strips()
+        self.refresh_canvas()
 
     def set_theme(self, theme: APP_THEME) -> None:
         self.theme = theme
@@ -154,112 +287,68 @@ class PlotPanel(QWidget):
         self.refresh_canvas()
 
     def refresh_canvas(self) -> None:
-        self.canvas.draw()
         self.canvas.updateGeometry()
         self.updateGeometry()
 
     def _render_time(self) -> None:
         if self.time_model is None:
-            raise ValueError(
-                "Time model is not initialized. Call render_input() first."
-            )
-        input_y = self.time_model.current_input_ui
+            raise ValueError("Time model is not initialized. Call render_input() first.")
+
+        self.line_current.setData(self.time_model.t_ui, self.time_model.current_input_ui)
         recon_y = self.time_model.current_recon_ui
-        self.canvas.ax_time.set_ylabel("Current (kA)")
-
-        self.line_current.set_data(self.time_model.t_ui, input_y)
-
         if recon_y is not None:
-            self.line_recon.set_visible(True)
-            self.line_recon.set_data(self.time_model.t_ui, recon_y)
+            self.line_recon.setData(self.time_model.t_ui, recon_y)
         else:
-            self.line_recon.set_visible(False)
-            self.line_recon.set_data([], [])
-
-        if self.time_model.current_recon_ui is not None:
-            self.line_recon.set_visible(True)
-            self.line_recon.set_data(
-                self.time_model.t_ui, self.time_model.current_recon_ui
-            )
-        else:
-            self.line_recon.set_visible(False)
-            self.line_recon.set_data([], [])
+            self.line_recon.setData([], [])
 
     def _render_spectrum(self) -> None:
         if self.spectrum_model is None:
             raise ValueError(
                 "Spectrum model is not initialized. Call render_input() first."
             )
-        self.line_mag.set_data(
-            self.spectrum_model.f_ui, self.spectrum_model.mag_input_ui
-        )
-        if self.spectrum_model.mag_recon_ui is not None:
-            self.line_mag_recon.set_visible(True)
-            self.line_mag_recon.set_data(
-                self.spectrum_model.f_ui, self.spectrum_model.mag_recon_ui
-            )
+
+        f_ui = self.spectrum_model.f_ui
+        self.line_mag.setData(f_ui, self._log_mag(self.spectrum_model.mag_input_ui))
+
+        mag_recon = self.spectrum_model.mag_recon_ui
+        if mag_recon is not None:
+            self.line_mag_recon.setData(f_ui, self._log_mag(mag_recon))
         else:
-            self.line_mag_recon.set_visible(False)
-            self.line_mag_recon.set_data([], [])
-        self.line_phase_in.set_data(
-            self.spectrum_model.f_ui, self.spectrum_model.phase_input_ui
-        )
-        if self.spectrum_model.phase_recon_ui is not None:
-            self.line_phase_recon.set_visible(True)
-            self.line_phase_recon.set_data(
-                self.spectrum_model.f_ui, self.spectrum_model.phase_recon_ui
-            )
+            self.line_mag_recon.setData([], [])
+
+        self.line_phase_in.setData(f_ui, self.spectrum_model.phase_input_ui)
+
+        phase_recon = self.spectrum_model.phase_recon_ui
+        if phase_recon is not None:
+            self.line_phase_recon.setData(f_ui, phase_recon)
         else:
-            self.line_phase_recon.set_visible(False)
-            self.line_phase_recon.set_data([], [])
+            self.line_phase_recon.setData([], [])
 
     def _render_fwhm(self) -> None:
         if self.time_model is None:
-            raise ValueError(
-                "Time model is not initialized. Call render_input() first."
-            )
-
-        ci_fwhm = self.time_model.current_input_fwhm
-        cr_fwhm = self.time_model.current_recon_fwhm
+            raise ValueError("Time model is not initialized. Call render_input() first.")
 
         visible_lines = self.plot_controls.visible_lines
-
         show_input_times = PLOT_LINE_MODE.CURRENT_INPUT in visible_lines
         show_recon_times = PLOT_LINE_MODE.CURRENT_RECON in visible_lines
 
-        if ci_fwhm is not None:
-            self.line_fwhm_input.set_data(
-                [ci_fwhm.left_half_max, ci_fwhm.right_half_max],
-                [ci_fwhm.half_max_value, ci_fwhm.half_max_value],
-            )
-            self.line_fwhm_input.set_visible(show_input_times)
-            self.line_fwhm_input_caps.set_data(
-                [ci_fwhm.left_half_max, ci_fwhm.right_half_max],
-                [ci_fwhm.half_max_value, ci_fwhm.half_max_value],
-            )
-            self.line_fwhm_input_caps.set_visible(show_input_times)
-            self.text_fwhm_input.set_text(f"Input FWHM: {ci_fwhm.fwhm:.2f} fs")
-        else:
-            self.line_fwhm_input.set_visible(False)
-            self.line_fwhm_input_caps.set_visible(False)
-            self.text_fwhm_input.set_text("Input FWHM: n/a")
-
-        if cr_fwhm is not None:
-            self.line_fwhm_recon.set_data(
-                [cr_fwhm.left_half_max, cr_fwhm.right_half_max],
-                [cr_fwhm.half_max_value, cr_fwhm.half_max_value],
-            )
-            self.line_fwhm_recon.set_visible(show_recon_times)
-            self.line_fwhm_recon_caps.set_data(
-                [cr_fwhm.left_half_max, cr_fwhm.right_half_max],
-                [cr_fwhm.half_max_value, cr_fwhm.half_max_value],
-            )
-            self.line_fwhm_recon_caps.set_visible(show_recon_times)
-            self.text_fwhm_recon.set_text(f"Reconstructed FWHM: {cr_fwhm.fwhm:.2f} fs")
-        else:
-            self.line_fwhm_recon.set_visible(False)
-            self.line_fwhm_recon_caps.set_visible(False)
-            self.text_fwhm_recon.set_text("Reconstructed FWHM: n/a")
+        self._set_fwhm_items(
+            self.time_model.current_input_fwhm,
+            self.line_fwhm_input,
+            self.line_fwhm_input_caps,
+            self.text_fwhm_input,
+            "Input FWHM",
+            show_input_times,
+        )
+        self._set_fwhm_items(
+            self.time_model.current_recon_fwhm,
+            self.line_fwhm_recon,
+            self.line_fwhm_recon_caps,
+            self.text_fwhm_recon,
+            "Reconstructed FWHM",
+            show_recon_times,
+        )
+        self._position_fwhm_labels()
 
     def _render_from_controls(self) -> None:
         if self.time_model is not None:
@@ -272,17 +361,14 @@ class PlotPanel(QWidget):
             self._apply_spectrum_axes()
 
         self._apply_line_visibility()
-        self.canvas.draw_idle()
+        self.refresh_canvas()
 
     def _apply_time_axes(self) -> None:
         model = self.time_model
         if model is None:
-            raise ValueError(
-                "Time model is not initialized. Call render_input() first."
-            )
-        self.canvas.ax_time.set_xlim(model.t_min_ui, model.t_max_ui)
-        self.canvas.ax_time.relim()
-        self.canvas.ax_time.autoscale_view(scalex=False, scaley=True)
+            raise ValueError("Time model is not initialized. Call render_input() first.")
+        self.canvas.time_plot.setXRange(model.t_min_ui, model.t_max_ui, padding=0.0)
+        self.canvas.time_plot.enableAutoRange(axis="y")
 
     def _apply_spectrum_axes(self) -> None:
         model = self.spectrum_model
@@ -291,6 +377,217 @@ class PlotPanel(QWidget):
                 "Spectrum model is not initialized. Call render_input() first."
             )
 
+        x0, x1 = self._spectrum_x_range(model)
+        self.canvas.spectrum_plot.setXRange(x0, x1, padding=0.0)
+        self.canvas.spectrum_plot.enableAutoRange(axis="y")
+        self.canvas.phase_view.enableAutoRange(axis="y")
+        self.canvas._sync_phase_view()
+
+    def _apply_line_visibility(self) -> None:
+        visible = self.plot_controls.visible_lines
+
+        self.line_current.setVisible(PLOT_LINE_MODE.CURRENT_INPUT in visible)
+        self.line_recon.setVisible(
+            PLOT_LINE_MODE.CURRENT_RECON in visible
+            and self.time_model is not None
+            and self.time_model.current_recon_ui is not None
+        )
+        self.line_mag.setVisible(PLOT_LINE_MODE.MAG_INPUT in visible)
+        self.line_mag_recon.setVisible(
+            PLOT_LINE_MODE.MAG_RECON in visible
+            and self.spectrum_model is not None
+            and self.spectrum_model.mag_recon_ui is not None
+        )
+        self.line_phase_in.setVisible(PLOT_LINE_MODE.PHASE_INPUT in visible)
+        self.line_phase_recon.setVisible(
+            PLOT_LINE_MODE.PHASE_RECON in visible
+            and self.spectrum_model is not None
+            and self.spectrum_model.phase_recon_ui is not None
+        )
+        self._refresh_legend_strips()
+
+    def _create_artists(self):
+        self.line_current = self.canvas.time_plot.plot([], [])
+        self.line_recon = self.canvas.time_plot.plot([], [])
+
+        self.line_fwhm_input = self.canvas.time_plot.plot([], [])
+        self.line_fwhm_recon = self.canvas.time_plot.plot([], [])
+        self.line_fwhm_input_caps = self.canvas.time_plot.plot([], [])
+        self.line_fwhm_recon_caps = self.canvas.time_plot.plot([], [])
+
+        self.text_fwhm_input = pg.TextItem("", anchor=(1, 0))
+        self.text_fwhm_recon = pg.TextItem("", anchor=(1, 0))
+        self.canvas.time_plot.addItem(self.text_fwhm_input)
+        self.canvas.time_plot.addItem(self.text_fwhm_recon)
+
+        self.line_mag = self.canvas.spectrum_plot.plot([], [])
+        self.line_mag_recon = self.canvas.spectrum_plot.plot([], [])
+        self.line_phase_in = pg.PlotDataItem([], [])
+        self.line_phase_recon = pg.PlotDataItem([], [])
+        self.canvas.phase_view.addItem(self.line_phase_in)
+        self.canvas.phase_view.addItem(self.line_phase_recon)
+
+    def _style_axes(self):
+        pass
+
+    def _apply_theme_to_plot(self) -> None:
+        theme = PLOT_THEMES[self.theme]
+        colors = self._colors()
+
+        self.canvas.setStyleSheet(f"background-color: {theme.background};")
+        for widget in (self.canvas.time_plot, self.canvas.spectrum_plot):
+            widget.setBackground(theme.plot_background)
+            widget.setStyleSheet(f"background-color: {theme.plot_background};")
+            plot_item = widget.getPlotItem()
+            plot_item.showGrid(x=False, y=False)
+            for axis_name in ("left", "right", "top", "bottom"):
+                axis = plot_item.getAxis(axis_name)
+                axis.setPen(pg.mkPen(theme.axis))
+                axis.setTextPen(pg.mkPen(theme.text))
+                axis.setStyle(tickTextOffset=6)
+
+        self.canvas.spectrum_plot.getPlotItem().getAxis("left").setTextPen(
+            pg.mkPen(colors[0])
+        )
+        self.canvas.spectrum_plot.getPlotItem().getAxis("right").setTextPen(
+            pg.mkPen(colors[1])
+        )
+
+        self.line_current.setPen(pg.mkPen(colors[0], width=LINE_WIDTH))
+        self.line_recon.setPen(
+            pg.mkPen(colors[1], width=LINE_WIDTH, style=Qt.DashLine)
+        )
+        self.line_mag.setPen(pg.mkPen(colors[0], width=LINE_WIDTH))
+        self.line_mag_recon.setPen(
+            pg.mkPen(colors[1], width=LINE_WIDTH, style=Qt.DashLine)
+        )
+        self.line_phase_in.setPen(pg.mkPen(colors[2], width=LINE_WIDTH))
+        self.line_phase_recon.setPen(
+            pg.mkPen(colors[3], width=LINE_WIDTH, style=Qt.DashLine)
+        )
+        self.line_fwhm_input.setPen(pg.mkPen(colors[0], width=FWHM_WIDTH))
+        self.line_fwhm_recon.setPen(pg.mkPen(colors[1], width=FWHM_WIDTH))
+        self.line_fwhm_input_caps.setPen(pg.mkPen(colors[0], width=CAP_WIDTH))
+        self.line_fwhm_recon_caps.setPen(pg.mkPen(colors[1], width=CAP_WIDTH))
+
+        self.text_fwhm_input.setColor(QColor(colors[0]))
+        self.text_fwhm_recon.setColor(QColor(colors[1]))
+        fill = QBrush(QColor(*theme.fwhm_fill))
+        for text in (self.text_fwhm_input, self.text_fwhm_recon):
+            text.fill = fill
+            text.border = QPen(Qt.PenStyle.NoPen)
+
+        for index, line in enumerate(self.measurement_lines):
+            color = colors[(index + 4) % len(colors)]
+            line.setSymbolPen(pg.mkPen(color, width=2))
+            line.setSymbolBrush(pg.mkBrush(color))
+
+        self._refresh_legend_strips()
+
+    def _colors(self) -> list[str]:
+        return list(COLORBLIND_FRIENDLY_CYCLE)
+
+    def _refresh_legend_strips(self) -> None:
+        theme = PLOT_THEMES[self.theme]
+        colors = self._colors()
+        visible = self.plot_controls.visible_lines
+
+        time_items = []
+        if PLOT_LINE_MODE.CURRENT_INPUT in visible:
+            time_items.append(("input", colors[0], Qt.PenStyle.SolidLine, False))
+        if (
+            PLOT_LINE_MODE.CURRENT_RECON in visible
+            and self.time_model is not None
+            and self.time_model.current_recon_ui is not None
+        ):
+            time_items.append(
+                ("reconstructed", colors[1], Qt.PenStyle.DashLine, False)
+            )
+        self.canvas.time_legend.set_items(time_items, theme.legend_background, theme.text)
+
+        spectrum_items = []
+        if PLOT_LINE_MODE.MAG_INPUT in visible:
+            spectrum_items.append(("|F|", colors[0], Qt.PenStyle.SolidLine, False))
+        if (
+            PLOT_LINE_MODE.MAG_RECON in visible
+            and self.spectrum_model is not None
+            and self.spectrum_model.mag_recon_ui is not None
+        ):
+            spectrum_items.append(("|F| (recon)", colors[1], Qt.PenStyle.DashLine, False))
+        if PLOT_LINE_MODE.PHASE_INPUT in visible:
+            spectrum_items.append(
+                ("phase (input)", colors[2], Qt.PenStyle.SolidLine, False)
+            )
+        if (
+            PLOT_LINE_MODE.PHASE_RECON in visible
+            and self.spectrum_model is not None
+            and self.spectrum_model.phase_recon_ui is not None
+        ):
+            spectrum_items.append(
+                ("phase (recon)", colors[3], Qt.PenStyle.DashLine, False)
+            )
+        for index, label in enumerate(self.measurement_labels):
+            spectrum_items.append(
+                (
+                    label,
+                    colors[(index + 4) % len(colors)],
+                    Qt.PenStyle.SolidLine,
+                    True,
+                )
+            )
+        self.canvas.spectrum_legend.set_items(
+            spectrum_items,
+            theme.legend_background,
+            theme.text,
+        )
+
+    def _set_fwhm_items(
+        self,
+        fwhm,
+        line: pg.PlotDataItem,
+        caps: pg.PlotDataItem,
+        text: pg.TextItem,
+        label: str,
+        visible: bool,
+    ) -> None:
+        if fwhm is None:
+            line.setData([], [])
+            caps.setData([], [])
+            text.setText(f"{label}: n/a")
+            line.setVisible(False)
+            caps.setVisible(False)
+            text.setVisible(True)
+            return
+
+        x0 = float(fwhm.left_half_max)
+        x1 = float(fwhm.right_half_max)
+        y = float(fwhm.half_max_value)
+        cap_height = self._fwhm_cap_height()
+        line.setData([x0, x1], [y, y])
+        caps.setData(
+            [x0, x0, np.nan, x1, x1],
+            [y - cap_height, y + cap_height, np.nan, y - cap_height, y + cap_height],
+        )
+        text.setText(f"{label}: {fwhm.fwhm:.2f} fs")
+        line.setVisible(visible)
+        caps.setVisible(visible)
+        text.setVisible(True)
+
+    def _fwhm_cap_height(self) -> float:
+        (_, _), (y0, y1) = self.canvas.time_plot.getViewBox().viewRange()
+        if math.isfinite(y0) and math.isfinite(y1) and y0 != y1:
+            return abs(y1 - y0) * 0.025
+        return 1.0
+
+    def _position_fwhm_labels(self) -> None:
+        (x0, x1), (y0, y1) = self.canvas.time_plot.getViewBox().viewRange()
+        if not all(math.isfinite(v) for v in (x0, x1, y0, y1)):
+            return
+        x = x1 - (x1 - x0) * 0.015
+        self.text_fwhm_input.setPos(x, y1 - (y1 - y0) * 0.03)
+        self.text_fwhm_recon.setPos(x, y1 - (y1 - y0) * 0.11)
+
+    def _spectrum_x_range(self, model: SpectrumPlotModel) -> tuple[float, float]:
         x0_value = model.f_min_ui
         x1_value = model.f_max_ui
         if x0_value is None or x1_value is None:
@@ -300,223 +597,14 @@ class PlotPanel(QWidget):
             x1 = float(x1_value)
 
         if not np.isfinite(x0) or not np.isfinite(x1):
-            x0, x1 = 0.0, 333.0
-        elif x0 == x1:
+            return 0.0, 333.0
+        if x0 == x1:
             pad = max(abs(x0) * 0.05, 1.0)
-            x0 -= pad
-            x1 += pad
+            return x0 - pad, x1 + pad
+        return x0, x1
 
-        self.canvas.ax_mag.set_xlim(x0, x1)
-        self.canvas.ax_phase.set_xlim(x0, x1)
-
-        self.canvas.ax_mag.relim()
-        self.canvas.ax_mag.autoscale_view(scalex=False, scaley=True)
-
-        self.canvas.ax_phase.relim()
-        self.canvas.ax_phase.autoscale_view(scalex=False, scaley=True)
-
-    def _apply_line_visibility(self) -> None:
-        visible = self.plot_controls.visible_lines
-
-        self.line_current.set_visible(PLOT_LINE_MODE.CURRENT_INPUT in visible)
-
-        self.line_recon.set_visible(
-            PLOT_LINE_MODE.CURRENT_RECON in visible
-            and self.time_model is not None
-            and self.time_model.current_recon_ui is not None
-        )
-
-        self.line_mag.set_visible(PLOT_LINE_MODE.MAG_INPUT in visible)
-
-        self.line_mag_recon.set_visible(
-            PLOT_LINE_MODE.MAG_RECON in visible
-            and self.spectrum_model is not None
-            and self.spectrum_model.mag_recon_ui is not None
-        )
-
-        self.line_phase_in.set_visible(PLOT_LINE_MODE.PHASE_INPUT in visible)
-
-        self.line_phase_recon.set_visible(
-            PLOT_LINE_MODE.PHASE_RECON in visible
-            and self.spectrum_model is not None
-            and self.spectrum_model.phase_recon_ui is not None
-        )
-
-    def _create_artists(self):
-        (self.line_current,) = self.canvas.ax_time.plot(
-            [], [], label="input", linewidth=2.0
-        )
-        (self.line_recon,) = self.canvas.ax_time.plot(
-            [], [], label="reconstructed", linestyle="--", alpha=0.9
-        )
-
-        (self.line_fwhm_input,) = self.canvas.ax_time.plot(
-            [],
-            [],
-            linewidth=3.0,
-            color=self.line_current.get_color(),
-            alpha=0.95,
-            solid_capstyle="butt",
-            zorder=5,
-        )
-        (self.line_fwhm_recon,) = self.canvas.ax_time.plot(
-            [],
-            [],
-            linewidth=3.0,
-            color=self.line_recon.get_color(),
-            alpha=0.95,
-            solid_capstyle="butt",
-            zorder=5,
-        )
-
-        (self.line_fwhm_input_caps,) = self.canvas.ax_time.plot(
-            [],
-            [],
-            linestyle="None",
-            marker="|",
-            markersize=12,
-            color=self.line_current.get_color(),
-            zorder=6,
-        )
-        (self.line_fwhm_recon_caps,) = self.canvas.ax_time.plot(
-            [],
-            [],
-            linestyle="None",
-            marker="|",
-            markersize=12,
-            color=self.line_recon.get_color(),
-            zorder=6,
-        )
-
-        self.text_fwhm_input = self.canvas.ax_time.text(
-            0.985,
-            0.98,
-            "",
-            transform=self.canvas.ax_time.transAxes,
-            ha="right",
-            va="top",
-            fontsize="small",
-            color=self.line_current.get_color(),
-            bbox=dict(boxstyle="round,pad=0.2", fc=(0, 0, 0, 0.18), ec="none"),
-        )
-        self.text_fwhm_recon = self.canvas.ax_time.text(
-            0.985,
-            0.90,
-            "",
-            transform=self.canvas.ax_time.transAxes,
-            ha="right",
-            va="top",
-            fontsize="small",
-            color=self.line_recon.get_color(),
-            bbox=dict(boxstyle="round,pad=0.2", fc=(0, 0, 0, 0.18), ec="none"),
-        )
-
-        (self.line_mag,) = self.canvas.ax_mag.plot([], [], label="|F|", color="C0")
-        (self.line_mag_recon,) = self.canvas.ax_mag.plot(
-            [], [], label="|F| (recon)", color="C3", linestyle="--", alpha=0.9
-        )
-        (self.line_phase_in,) = self.canvas.ax_phase.plot(
-            [], [], label="phase (input)", color="C1"
-        )
-        (self.line_phase_recon,) = self.canvas.ax_phase.plot(
-            [], [], label="phase (recon)", color="C2", linestyle="--", alpha=0.9
-        )
-
-    def _style_axes(self):
-        self.canvas.ax_time.legend(loc="upper left", fontsize="small")
-        self.canvas.ax_time.set_xlabel("t (fs)")
-        self.canvas.ax_time.set_ylabel("Current (kA)")
-
-        self.canvas.ax_mag.set_xlabel("f (THz)")
-        self.canvas.ax_mag.set_ylabel("|F(f)|", color="C0")
-        self.canvas.ax_phase.set_ylabel("phase (rad)", color="C1")
-        self.canvas.ax_mag.set_yscale("log")
-        self.canvas.ax_mag.legend(loc="upper left", fontsize="small")
-        self.canvas.ax_phase.legend(loc="upper right", fontsize="small")
-
-        self.ax_lambda = self.canvas.ax_mag.secondary_xaxis(
-            "top", functions=(thz_to_nm, nm_to_thz)
-        )
-        self.ax_lambda.set_xlabel("λ (nm)")
-        self.ax_lambda.set_xticks([1000, 1500, 2000, 3000, 10000])
-
-    def _apply_theme_to_plot(self) -> None:
-        colors = list(COLORBLIND_FRIENDLY_CYCLE)
-        rc_colors = mpl.rcParams["axes.prop_cycle"].by_key().get("color", [])
-        if len(rc_colors) >= 4:
-            colors = list(rc_colors)
-        if len(colors) < 4:
-            colors = ["#4E79A7", "#F28E2B", "#B07AA1", "#76B7B2"]
-
-        facecolor = mpl.rcParams["axes.facecolor"]
-        figure_facecolor = mpl.rcParams["figure.facecolor"]
-        text_color = mpl.rcParams["text.color"]
-        label_color = mpl.rcParams["axes.labelcolor"]
-        edge_color = mpl.rcParams["axes.edgecolor"]
-        grid_color = mpl.rcParams["grid.color"]
-
-        self.canvas.figure.set_facecolor(figure_facecolor)
-        self.canvas.setStyleSheet(f"background: {figure_facecolor};")
-
-        for ax in self.canvas.figure.axes:
-            ax.set_facecolor(facecolor)
-            ax.title.set_color(text_color)
-            ax.xaxis.label.set_color(label_color)
-            ax.yaxis.label.set_color(label_color)
-            ax.tick_params(axis="both", colors=mpl.rcParams["xtick.color"])
-            ax.grid(
-                mpl.rcParams["axes.grid"],
-                color=grid_color,
-                linestyle=mpl.rcParams["grid.linestyle"],
-                alpha=mpl.rcParams["grid.alpha"],
-            )
-            for spine in ax.spines.values():
-                spine.set_color(edge_color)
-            self._style_legend(ax.get_legend())
-
-        self.ax_lambda.xaxis.label.set_color(label_color)
-        self.ax_lambda.tick_params(axis="x", colors=mpl.rcParams["xtick.color"])
-        for spine in self.ax_lambda.spines.values():
-            spine.set_color(edge_color)
-
-        self.line_current.set_color(colors[0])
-        self.line_recon.set_color(colors[1])
-        self.line_mag.set_color(colors[0])
-        self.line_mag_recon.set_color(colors[1])
-        self.line_phase_in.set_color(colors[2])
-        self.line_phase_recon.set_color(colors[3])
-
-        self.line_fwhm_input.set_color(colors[0])
-        self.line_fwhm_input_caps.set_color(colors[0])
-        self.text_fwhm_input.set_color(colors[0])
-        self.line_fwhm_recon.set_color(colors[1])
-        self.line_fwhm_recon_caps.set_color(colors[1])
-        self.text_fwhm_recon.set_color(colors[1])
-
-        self.canvas.ax_mag.yaxis.label.set_color(colors[0])
-        self.canvas.ax_phase.yaxis.label.set_color(colors[1])
-        self.canvas.ax_mag.tick_params(axis="y", colors=colors[0])
-        self.canvas.ax_phase.tick_params(axis="y", colors=colors[1])
-
-        self._style_fwhm_box(self.text_fwhm_input)
-        self._style_fwhm_box(self.text_fwhm_recon)
-
-        for index, line in enumerate(self.measurement_lines):
-            line.set_color(colors[(index + 4) % len(colors)])
-
-    def _style_legend(self, legend) -> None:
-        if legend is None:
-            return
-
-        legend.get_frame().set_facecolor(mpl.rcParams["legend.facecolor"])
-        legend.get_frame().set_edgecolor(mpl.rcParams["legend.edgecolor"])
-        legend.get_frame().set_alpha(mpl.rcParams["legend.framealpha"])
-        for text in legend.get_texts():
-            text.set_color(mpl.rcParams["text.color"])
-
-    def _style_fwhm_box(self, text) -> None:
-        if self.theme == APP_THEME.LIGHT:
-            facecolor = (1.0, 1.0, 1.0, 0.72)
-        else:
-            facecolor = (0.0, 0.0, 0.0, 0.18)
-        text.set_bbox(dict(boxstyle="round,pad=0.2", fc=facecolor, ec="none"))
+    def _log_mag(self, values: np.ndarray) -> np.ndarray:
+        values = np.asarray(values, dtype=float)
+        finite = np.isfinite(values)
+        clipped = np.clip(values, MIN_LOG_MAG, None)
+        return np.where(finite, np.log10(clipped), np.nan)

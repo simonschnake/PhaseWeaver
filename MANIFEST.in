@@ -1,1 +1,1 @@
-recursive-include src/phase_weaver *.png *.mplstyle
+recursive-include src/phase_weaver *.png

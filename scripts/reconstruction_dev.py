@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from matplotlib import pyplot as plt
-
 import numpy as np
+import pyqtgraph as pg
+from PySide6.QtCore import Qt
 
 from phase_weaver.app.state import (
     ControlsState,
@@ -14,8 +14,7 @@ from phase_weaver.app.state import (
     ReconstructionState,
 )
 from phase_weaver.app.plot_model import TimePlotModel, SpectrumPlotModel
-from phase_weaver.core import CurrentProfile, FormFactor
-from phase_weaver.core.reconstruction import CombineMeasuredMagnitudes
+from phase_weaver.core import CurrentProfile
 from phase_weaver.model.profiles import AsymSuperGaussParams
 from phase_weaver.app import config as CFG
 
@@ -45,12 +44,15 @@ def main() -> int:
 
     logic = AppLogic()
 
-    prof_input, ff_input, measurement = logic.compute_initial(control_state)
+    prof_input, ff_input, _measurement = logic.compute_initial(control_state)
+    measurements, source = logic.active_measurements(ff_input, control_state.measurement)
 
-    prof_recon, ff_recon = logic.compute_reconstruction(
+    prof_recon, ff_recon, _summary = logic.compute_reconstruction(
+        grid=ff_input.grid,
+        measurements=measurements,
         controls_state=control_state,
         ff_input=ff_input,
-        measured_ff=measurement,
+        measurement_source=source,
     )
 
     prof_recon.charge = prof_input.charge
@@ -63,24 +65,43 @@ def main() -> int:
 
     spec_model = SpectrumPlotModel(formfactor_input=ff_input, formfactor_recon=ff_recon)
 
-    _, ax = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
+    app = pg.mkQApp("PhaseWeaver reconstruction dev")
+    win = pg.GraphicsLayoutWidget(show=True, title="PhaseWeaver reconstruction dev")
+    win.resize(1100, 450)
 
-    ax[0].plot(time_model.t_ui, time_model.current_input_ui, label="Input")
-    ax[0].plot(time_model.t_ui, time_model.current_recon_ui, "--", label="Init")
-    ax[0].set_ylabel("Current (kA)")
-    ax[0].set_xlabel("t (fs)")
-    ax[0].legend()
+    time_plot = win.addPlot(row=0, col=0)
+    time_plot.setLabel("left", "Current", units="kA")
+    time_plot.setLabel("bottom", "t", units="fs")
+    time_plot.addLegend()
+    time_plot.plot(time_model.t_ui, time_model.current_input_ui, pen="b", name="Input")
+    if time_model.current_recon_ui is not None:
+        time_plot.plot(
+            time_model.t_ui,
+            time_model.current_recon_ui,
+            pen=pg.mkPen("r", style=Qt.DashLine),
+            name="Recon",
+        )
 
-    ax[1].plot(spec_model.f_ui, spec_model.mag_input_ui, "-", label="Mag Input")
-    ax[1].plot(spec_model.f_ui, spec_model.mag_recon_ui, "--", label="Mag Init")
-    ax[1].set_ylabel(r"$|F|^2$ (a.u.)")
-    ax[1].set_xlabel(r"$f$ (THz)")
-    ax[1].set_yscale("log")
-    ax[1].set_xlim(spec_model.f_min_ui, spec_model.f_max_ui)
-    ax[1].legend()
+    spec_plot = win.addPlot(row=0, col=1)
+    spec_plot.setLabel("left", "log10 |F|")
+    spec_plot.setLabel("bottom", "f", units="THz")
+    spec_plot.addLegend()
+    spec_plot.plot(
+        spec_model.f_ui,
+        np.log10(np.clip(spec_model.mag_input_ui, 1e-12, None)),
+        pen="b",
+        name="Mag Input",
+    )
+    if spec_model.mag_recon_ui is not None:
+        spec_plot.plot(
+            spec_model.f_ui,
+            np.log10(np.clip(spec_model.mag_recon_ui, 1e-12, None)),
+            pen=pg.mkPen("r", style=Qt.DashLine),
+            name="Mag Recon",
+        )
+    spec_plot.setXRange(spec_model.f_min_ui, spec_model.f_max_ui, padding=0.0)
 
-    plt.show()
-    return 0
+    return app.exec()
 
 
 if __name__ == "__main__":
