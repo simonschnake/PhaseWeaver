@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Development Script for the reconstruction"""
+"""Development script for exercising the reconstruction pipeline."""
 
 from __future__ import annotations
 
@@ -7,19 +7,17 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
 
+from phase_weaver.app import config as CFG
+from phase_weaver.app.logic import AppLogic
 from phase_weaver.app.state import (
     ControlsState,
-    ProfileModelState,
     MeasurementState,
+    ProfileModelState,
     ReconstructionState,
 )
-from phase_weaver.app.plot_model import TimePlotModel, SpectrumPlotModel
 from phase_weaver.core import CurrentProfile
+from phase_weaver.app.plot_model import SpectrumPlotModel, TimePlotModel
 from phase_weaver.model.profiles import AsymSuperGaussParams
-from phase_weaver.app import config as CFG
-
-
-from phase_weaver.app.logic import AppLogic
 
 
 def main() -> int:
@@ -32,32 +30,30 @@ def main() -> int:
         ),
     )
 
-    measurement = MeasurementState(crisp=True, infrared=True)
-
-    reconstruction = ReconstructionState(
-        phase_init_mode=CFG.PHASE_INIT_MODE.ZERO,
-    )
-
-    control_state = ControlsState(
-        scenario=scenario, measurement=measurement, reconstruction=reconstruction
+    controls_state = ControlsState(
+        scenario=scenario,
+        measurement=MeasurementState(crisp=True, infrared=True),
+        reconstruction=ReconstructionState(phase_init_mode=CFG.PHASE_INIT_MODE.ZERO),
     )
 
     logic = AppLogic()
 
-    prof_input, ff_input, _measurement = logic.compute_initial(control_state)
-    measurements, source = logic.active_measurements(ff_input, control_state.measurement)
+    prof_input, ff_input, _measurements = logic.compute_initial(controls_state)
+    measurements, measurement_source = logic.active_measurements(
+        ff_input, controls_state.measurement
+    )
 
     prof_recon, ff_recon, _summary = logic.compute_reconstruction(
         grid=ff_input.grid,
         measurements=measurements,
-        controls_state=control_state,
+        controls_state=controls_state,
         ff_input=ff_input,
-        measurement_source=source,
+        measurement_source=measurement_source,
     )
 
     prof_recon.charge = prof_input.charge
 
-    # Plot Stuff
+    # Plot the generated input and reconstructed profiles side by side.
     time_model = TimePlotModel(
         profile_input=CurrentProfile.from_profile(prof_input),
         profile_recon=CurrentProfile.from_profile(prof_recon),

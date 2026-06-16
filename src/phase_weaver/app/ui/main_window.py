@@ -2,11 +2,11 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
     QApplication,
-    QDockWidget,
+    QDialog,
     QFileDialog,
-    QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QVBoxLayout,
     QWidget,
@@ -17,8 +17,8 @@ from phase_weaver.qt_theme import APP_THEME, set_app_theme
 from ..logic import AppLogic, ReconstructionSummary
 from ..state import ControlsState
 from ..utils import load_app_icon
-from .controls_panel import ControlsPanel
 from .plot_panel import PlotPanel
+from .reconstruction_panel import ReconstructionPanel
 from .toy_model_panel import ToyModelPanel
 
 
@@ -32,7 +32,7 @@ class MainWindow(QMainWindow):
         self.logic = AppLogic()
         self.plot_panel: PlotPanel = PlotPanel(theme=theme)
 
-        self.controls_panel = ControlsPanel()
+        self.reconstruction_panel = ReconstructionPanel()
         self.toy_model_panel = ToyModelPanel()
         self.reconstruct_timer = QTimer(self)
         self.reconstruct_timer.setSingleShot(True)
@@ -41,33 +41,25 @@ class MainWindow(QMainWindow):
         central = QWidget()
         layout = QVBoxLayout(central)
 
-        body = QWidget()
-        body_layout = QHBoxLayout(body)
-        body_layout.addWidget(self.plot_panel, 1)
-        body_layout.addWidget(self.controls_panel)
-
         self.summary_label = QLabel()
         self.summary_label.setTextInteractionFlags(self.summary_label.textInteractionFlags())
         self.summary_label.setWordWrap(True)
 
-        layout.addWidget(body, 1)
+        layout.addWidget(self.plot_panel, 1)
         layout.addWidget(self.summary_label)
         self.setCentralWidget(central)
-        self._create_toy_model_dock()
+        self._create_toy_model_window()
+        self._create_reconstruction_window()
         self.resize(1800, 650)
 
-        self.toy_model_panel.changed.connect(self.schedule_updates)
-        self.controls_panel.changed.connect(self.schedule_updates)
-        self.controls_panel.export_requested.connect(self.export_requested)
-        self.controls_panel.measurements_load_requested.connect(
-            self.load_measurements_requested
-        )
-        self.controls_panel.reconstruction_auto_toggled.connect(
+        self.reconstruction_panel.changed.connect(self.schedule_updates)
+        self.reconstruction_panel.reconstruction_auto_toggled.connect(
             self.reconstruction_auto_toggled
         )
-        self.controls_panel.reconstruction_requested.connect(
+        self.reconstruction_panel.reconstruction_requested.connect(
             self.run_reconstruction_requested
         )
+        self.toy_model_panel.changed.connect(self.schedule_updates)
 
         self.redraw_timer = QTimer(self)
         self.redraw_timer.setSingleShot(True)
@@ -77,25 +69,81 @@ class MainWindow(QMainWindow):
         self.schedule_updates()
         self.update_summary(self.logic.reconstruction_summary)
 
-    def _create_toy_model_dock(self) -> None:
-        self.toy_model_dock = QDockWidget("Toy Model", self)
-        self.toy_model_dock.setObjectName("toyModelDock")
-        self.toy_model_dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+    def _create_toy_model_window(self) -> None:
+        self.toy_model_window = QDialog(self)
+        self.toy_model_window.setWindowTitle("Toy Model")
+        self.toy_model_window.setWindowIcon(self.windowIcon())
+        self.toy_model_window.setModal(False)
+        self.toy_model_window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        layout = QVBoxLayout(self.toy_model_window)
+        layout.addWidget(self.toy_model_panel)
+        self.toy_model_window.resize(520, 650)
+
+        self.toy_model_action = QAction("Toy Model", self)
+        self.toy_model_action.setCheckable(True)
+        self.toy_model_action.toggled.connect(self._set_toy_model_window_visible)
+        self.toy_model_window.finished.connect(
+            lambda _result: self.toy_model_action.setChecked(False)
         )
-        self.toy_model_dock.setWidget(self.toy_model_panel)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.toy_model_dock)
-        self.toy_model_dock.hide()
+
+    def _set_toy_model_window_visible(self, visible: bool) -> None:
+        if visible:
+            self.toy_model_window.show()
+            self.toy_model_window.raise_()
+            self.toy_model_window.activateWindow()
+        else:
+            self.toy_model_window.hide()
+
+    def _create_reconstruction_window(self) -> None:
+        self.reconstruction_window = QDialog(self)
+        self.reconstruction_window.setWindowTitle("Reconstruction Setup")
+        self.reconstruction_window.setWindowIcon(self.windowIcon())
+        self.reconstruction_window.setModal(False)
+        self.reconstruction_window.setAttribute(
+            Qt.WidgetAttribute.WA_DeleteOnClose, False
+        )
+        layout = QVBoxLayout(self.reconstruction_window)
+        layout.addWidget(self.reconstruction_panel)
+        self.reconstruction_window.resize(520, 650)
+
+        self.reconstruction_action = QAction("Reconstruction Setup", self)
+        self.reconstruction_action.setCheckable(True)
+        self.reconstruction_action.toggled.connect(
+            self._set_reconstruction_window_visible
+        )
+        self.reconstruction_window.finished.connect(
+            lambda _result: self.reconstruction_action.setChecked(False)
+        )
+
+    def _set_reconstruction_window_visible(self, visible: bool) -> None:
+        if visible:
+            self.reconstruction_window.show()
+            self.reconstruction_window.raise_()
+            self.reconstruction_window.activateWindow()
+        else:
+            self.reconstruction_window.hide()
 
     def _create_menus(self) -> None:
-        view_menu = self.menuBar().addMenu("View")
-        view_menu.addAction(self.toy_model_dock.toggleViewAction())
-        view_menu.addSeparator()
-        theme_menu = view_menu.addMenu("Theme")
-        lines_menu = view_menu.addMenu("Lines")
+        self.file_menu = QMenu("File", self)
+        self.menuBar().addMenu(self.file_menu)
+        load_measurements_action = QAction("Load Measurements...", self)
+        load_measurements_action.triggered.connect(self.load_measurements_requested)
+        self.file_menu.addAction(load_measurements_action)
+
+        export_action = QAction("Export Data...", self)
+        export_action.triggered.connect(self.export_requested)
+        self.file_menu.addAction(export_action)
+
+        self.view_menu = QMenu("View", self)
+        self.menuBar().addMenu(self.view_menu)
+        self.view_menu.addAction(self.toy_model_action)
+        self.view_menu.addAction(self.reconstruction_action)
+        self.view_menu.addSeparator()
+        theme_menu = self.view_menu.addMenu("Theme")
+        lines_menu = self.view_menu.addMenu("Lines")
         self.fwhm_action = self.plot_panel.plot_controls.fwhm_action
-        view_menu.addAction(self.fwhm_action)
-        view_menu.addSeparator()
+        self.view_menu.addAction(self.fwhm_action)
+        self.view_menu.addSeparator()
 
         self.theme_action_group = QActionGroup(self)
         self.theme_action_group.setExclusive(True)
@@ -129,8 +177,8 @@ class MainWindow(QMainWindow):
     def get_controls_state(self) -> ControlsState:
         return ControlsState(
             scenario=self.toy_model_panel.get_scenario_state(),
-            measurement=self.controls_panel.get_measurement_state(),
-            reconstruction=self.controls_panel.get_reconstruction_state(),
+            measurement=self.reconstruction_panel.get_measurement_state(),
+            reconstruction=self.reconstruction_panel.get_reconstruction_state(),
         )
 
     def set_theme(self, theme: APP_THEME) -> None:
@@ -162,7 +210,7 @@ class MainWindow(QMainWindow):
             self.logic.reconstruction_summary.status = "stale"
         self.plot_panel.clear_reconstruction()
         self.update_summary(self.logic.reconstruction_summary)
-        if self.controls_panel.is_auto_reconstruction_enabled():
+        if self.reconstruction_panel.is_auto_reconstruction_enabled():
             self.reconstruct_timer.start(200)
 
     def reconstruction_auto_toggled(self, enabled: bool) -> None:

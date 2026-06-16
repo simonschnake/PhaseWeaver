@@ -6,9 +6,9 @@ Last updated: 2026-06-16
 
 PhaseWeaver is currently a small Python/PySide6 scientific workbench for exploring current-profile reconstruction from form-factor magnitude data. The app can generate a configurable time-domain current profile, compute its spectrum magnitude and phase, simulate partial measurements, load `.npz` measurement bundles, and run a Gerchberg-Saxton-style magnitude-only reconstruction.
 
-The project is functional enough that the full pytest suite passes and the Qt main window can be constructed in an offscreen smoke test. The last-phase reconstruction bug has been fixed, the first experiment-use workflow is in place, and the plots now render correctly on initial load instead of only after running reconstruction once. Recent work also added theme switching, reconstruction history capture, a colorblind-friendly plot palette, and some layout/DPI polish.
+The project is functional enough that the full pytest suite passes and the Qt main window can be constructed in an offscreen smoke test. The last-phase reconstruction bug has been fixed, the first experiment-use workflow is in place, and the plots now render correctly on initial load instead of only after running reconstruction once. Recent work also added theme switching, reconstruction history capture, a colorblind-friendly plot palette, layout/DPI polish, and a cleaner main-window structure.
 
-The next work should shift the app toward a clearer reconstruction workbench: a large two-plot main view for time-domain current/profile and frequency-domain form factor, with model generation, reconstruction configuration, data loading, saving, and export moved out of the crowded central controls.
+The app now has a clearer reconstruction-workbench shape: a large two-plot main view for time-domain current/profile and frequency-domain form factor, `File` menu actions for loading/exporting data, and external View-menu windows for Toy Model and Reconstruction Setup. The next work should continue this direction by cleaning stale code left behind by the UI refactor and tightening metadata/export behavior.
 
 ## Product Goal And Workflow Direction
 
@@ -36,7 +36,7 @@ The target workflow is:
    - The main window should be centered on two large plots:
      - left: current/profile in time,
      - right: Fourier/form-factor view in frequency.
-   - Secondary controls should be available through menus and optional view windows, not permanently crowding the main plotting workspace.
+   - Secondary controls are now available through menus and optional external windows instead of permanently crowding the main plotting workspace.
 
 Important deferred decisions:
 
@@ -64,10 +64,10 @@ If the goal is to keep PhaseWeaver useful while the UI is being reworked, the im
    - Loaded measurements render as spectrum markers.
    - Reconstructed `|F|` and phase render after a successful reconstruction run.
 
-4. Move data actions toward the menu bar.
+4. Keep data actions in the menu bar.
    - Export uses a save dialog instead of always overwriting `export.npz`.
    - The `.npz` export includes plot arrays, loaded measurement arrays/labels, profile parameters, phase init mode, and reconstruction summary fields.
-   - Loading, saving, and export should migrate under a `File` menu rather than remain as large persistent controls.
+   - `File > Load Measurements...` and `File > Export Data...` are the active loading/export entry points.
 
 5. Preserve the reconstruction overview.
    - The GUI shows measurement source, measurement count, reconstruction state, iterations, stop reason, and final measurement error.
@@ -80,15 +80,15 @@ If the goal is to keep PhaseWeaver useful while the UI is being reworked, the im
 
 - Branch: `main`
 - Tracking: `origin/main`
-- Local status: `main` is ahead of `origin/main` by 14 commits
-- Latest commit: `9912018`
+- Local status: `main` is ahead of `origin/main` by 17 commits
+- Latest commit: `b0635bb`
 - Worktree state: modified
 - Package version: `0.4.0`
 - Python package layout: `src/phase_weaver`
 - Main executable: `phase_weaver = phase_weaver.app:main`
 - Main app entrypoint: `src/phase_weaver/app/main.py`
 - GUI framework: PySide6
-- Plotting: Matplotlib Qt backend
+- Plotting: pyqtgraph
 - Core numerical dependencies: NumPy, SciPy
 - Test runner: Pytest
 - Type checker: basedpyright
@@ -96,16 +96,24 @@ If the goal is to keep PhaseWeaver useful while the UI is being reworked, the im
 
 Current notable uncommitted paths:
 
-- `PROJECT_STATE.md` is modified with the current product/workflow direction.
+- `src/phase_weaver/app/ui/controls_panel.py` is deleted
+- `src/phase_weaver/app/ui/measurement_box.py` is deleted
+- `src/phase_weaver/app/ui/main_window.py`
+- `src/phase_weaver/app/ui/reconstruction_panel.py`
+- `scripts/reconstruction_dev.py`
+- `src/phase_weaver/core/utils.py`
+- `tests/app/test_controls_panel.py`
+- `PROJECT_STATE.md`
 
 ## What The App Does Today
 
-The app currently presents an interactive current-profile model directly in the main window:
+The app currently presents a focused plotting workbench in the main window:
 
-- A background asymmetric super-Gaussian.
-- One primary spike.
-- Optional second spike.
-- Configurable profile parameters through Qt controls.
+- Two large plots for time-domain current/profile and frequency-domain form factor.
+- `File > Load Measurements...` and `File > Export Data...` for data actions.
+- A status summary row for measurement source/count, reconstruction state, iterations, stop reason, and final error.
+- `View > Toy Model` opens a modeless external window with the configurable background/spike/spike-2 super-Gaussian profile generator.
+- `View > Reconstruction Setup` opens a modeless external window with phase init, measurement fallback selection, time constraints, frequency constraints, stop conditions, auto reconstruction, and run reconstruction.
 - Immediate plots for:
   - time-domain current/profile,
   - spectrum magnitude,
@@ -124,7 +132,7 @@ The reconstruction path currently works like this:
 8. Iteration alternates between time-domain constraints and frequency-domain constraints.
 9. The reconstructed profile, reconstructed spectrum, loaded measurement markers, and reconstruction summary are rendered in the GUI.
 
-This works, but it leaves too much model and reconstruction machinery visible at once. The intended next UI shape is a main plotting workspace plus optional tool windows.
+This now matches the intended near-term UI shape: a main plotting workspace plus optional setup windows.
 
 ## Core Architecture
 
@@ -153,14 +161,15 @@ Important modules:
   - Bridges UI state to profile generation, measurement loading/simulation, reconstruction, summary reporting, and NPZ export.
 
 - `src/phase_weaver/app/ui/`
-  - Contains Qt widgets for controls and plots.
-  - The current controls panel uses generic option selector widgets for phase init and measurement source selection.
+  - Contains Qt widgets for workflow controls, setup windows, and plots.
+  - `toy_model_panel.py` holds the three-super-Gaussian model controls.
+  - `reconstruction_panel.py` holds phase init, measurement fallback selection, constraints, stop conditions, and reconstruction run/auto controls.
   - `plot_controls_box.py` keeps only line-visibility controls; normalized time plotting is not exposed.
   - Reconstruction history is preserved in-memory and exported alongside the main arrays, which makes the latest reconstruction runs easier to inspect later.
 
 ## Verification Results
 
-Commands run on 2026-06-15:
+Commands run on 2026-06-16:
 
 ```bash
 uv run pytest
@@ -168,8 +177,8 @@ uv run pytest
 
 Result: pass.
 
-- 158 tests collected.
-- 158 passed.
+- 232 tests collected.
+- 232 passed.
 
 ```bash
 uv run pytest tests
@@ -177,8 +186,8 @@ uv run pytest tests
 
 Result: pass.
 
-- 158 tests collected.
-- 158 passed.
+- 232 tests collected.
+- 232 passed.
 
 ```bash
 uv run ruff check .
@@ -216,40 +225,44 @@ Result: pass.
 
 The app window constructs and enters/exits the Qt event loop in offscreen mode. Qt emitted non-fatal warnings about missing `Sans Serif` font alias and `propagateSizeHints()`.
 
-## Current Problems
+## Current Problems And Next Decisions
 
 ### 1. The Test Layout Is Mostly Stable
 
 `pytest` now runs cleanly. The project still needs one canonical documented command for day-to-day contributors, but this is no longer blocking app usage.
 
-### 2. The Main UI Is Overcrowded
+### 2. The Main UI Is Now A Plotting Workbench
 
-The current main window mixes plotting, toy-model definition, measurement controls, reconstruction controls, loading, running, and exporting in one place. This was useful while making the first workflow run, but it is no longer the desired operating shape.
+The main window no longer mixes plotting, toy-model definition, reconstruction configuration, and data actions in one always-visible area. The central UI is now the two-plot workspace plus a status summary.
 
-Desired direction:
+Current shape:
 
-- Make the main window primarily a two-plot workspace.
-- Move the three-super-Gaussian toy model into an optional window opened from the `View` menu.
-- Move reconstruction phase/configuration controls into an optional window opened from the `View` menu.
-- Move data loading, saving, and export actions into a `File` menu.
-- Keep small, high-signal status/run controls in the main window only where they support the plotting workflow directly.
+- `View > Toy Model` opens the three-super-Gaussian model in a persistent external window.
+- `View > Reconstruction Setup` opens phase initialization, measurement fallback selection, constraints, stop conditions, auto reconstruction, and run reconstruction in a persistent external window.
+- The `File` menu owns load measurements and export data actions.
+- The main window retains only the plots and reconstruction status summary.
+
+Remaining UI direction:
+
+- Decide whether a future toolbar is useful for frequently used actions.
+- Keep the main window free of detailed setup controls unless a control directly supports plot reading.
 
 ### 3. Measurement UI Still Has Some Drift
 
-The active operator workflow now supports loading real `.npz` measurement bundles. There is still older measurement UI code that is not part of the active flow.
+The active operator workflow now supports loading real `.npz` measurement bundles. The old standalone measurement widget has now been removed, but the measurement model still reflects an earlier UI direction.
 
-- Current active UI: `ControlsPanel` has load, run, export controls plus simulated CRISP/IR fallback selectors.
-- Stale/unused UI: `measurement_box.py` still expects removed config constants and a richer `MeasurementState` with `mode`, `f_min_hz`, `f_max_hz`, `overlap_width_hz`, and `scale`.
+- Current active UI: `ReconstructionPanel` has simulated CRISP/IR fallback selectors plus run/auto controls; file actions live in the `File` menu.
+- Removed stale UI: `measurement_box.py` and the old `ControlsPanel` have been deleted from the active code path.
 
 Impact:
 
-- `measurement_box.py` is stale and fails type checking.
 - Simulated CRISP and infrared ranges are currently hard-coded in config.
+- The app does not yet have a dedicated measurement-configuration window beyond the fallback selectors used for demo/synthetic data.
 
 Likely next decision:
 
-- Delete the old `MeasurementBox` unless it can become part of the new reconstruction or measurement tool window.
 - Keep external `.npz` measurements as the first real measurement path, while deferring exact schema finalization until real files are available.
+- Decide later whether richer measurement configuration belongs in its own tool window or should stay out of the GUI entirely.
 
 ### 4. Plot Controls Are Now Simpler
 
@@ -305,39 +318,29 @@ Current artifacts that should be intentionally handled:
 
 - `.tmp-mpl/` should probably be gitignored.
 - `notebooks/scratch.ipynb` has large uncommitted changes and lint noise.
-- `scripts/reconstruction_dev.py` references removed APIs.
+- `scripts/reconstruction_dev.py` is now aligned with the current app state types, but it still needs a decision on whether it remains a supported developer tool.
 - `Makefile` is useful, but should be committed only after deciding the canonical test commands.
 
 ## Recommended Direction
 
 ### Near-Term Stabilization
 
-1. Reshape the main window around the two central plots.
-   - Keep time-domain current/profile large on the left.
-   - Keep Fourier/form-factor frequency view large on the right.
-   - Remove persistent toy-model and detailed reconstruction controls from the central layout.
-
-2. Move the toy model into an optional View window.
-   - Preserve the existing three-super-Gaussian model as the first profile generator.
-   - Let the user open, close, and use that window to generate/update the active simulated profile.
-   - Later, add a clear state transition for disabling toy-model generation when a file-based simulated profile is loaded.
-
-3. Move reconstruction setup into an optional View window.
-   - Put phase initialization and reconstruction parameters there.
-   - Keep room for more detailed settings without bloating the main view.
-   - Continue backing this with the shared app/session data model.
-
-4. Move file operations into menus.
-   - Add or consolidate `File > Load ...`, `File > Save ...`, and `File > Export ...`.
-   - Keep `.npz` as the first measurement-bundle format.
-   - Defer precise schema work for CRISP/IR bundles and simulation/Ocelot files until concrete input examples are available.
-
-5. Clean stale code from the current refactor.
-   - Delete or revive `measurement_box.py`.
-   - Update or remove `scripts/reconstruction_dev.py`.
+1. Clean stale code from the current refactor.
+   - Remove any remaining imports or references that assume the deleted `ControlsPanel` or `MeasurementBox`.
+   - Decide whether `scripts/reconstruction_dev.py` stays as a maintained developer script.
    - Add `.tmp-mpl/` to `.gitignore`.
 
-6. Bring Ruff close to green.
+2. Keep the setup windows stable.
+   - The Toy Model and Reconstruction Setup controls now live in persistent external windows.
+   - Preserve their current state-driven behavior while stale UI modules are removed.
+   - Later, add a clear state transition for disabling toy-model generation when a file-based simulated profile is loaded.
+
+3. Verify export completeness.
+   - Keep `.npz` as the first measurement-bundle/export format.
+   - Confirm the export contains enough metadata for the current UI split.
+   - Defer precise schema work for real CRISP/IR and simulation files until examples are available.
+
+4. Bring Ruff close to green.
    - Auto-fix unused imports where safe.
    - Exclude notebooks if they are exploratory.
    - Keep lint focused on package code and tests.
@@ -373,16 +376,14 @@ PhaseWeaver should move toward being a trustworthy interactive reconstruction wo
 
 ## Suggested Next Work Order
 
-1. Redesign the main window around the two large plots.
-2. Extract the toy model controls into an optional View window.
-3. Extract reconstruction configuration into an optional View window.
-4. Move load/save/export actions into the `File` menu.
+1. Decide whether stale `measurement_box.py` should be deleted or folded into the new window structure.
+1. Remove any lingering references to the deleted `measurement_box.py` and `controls_panel.py` from docs, scripts, and tooling.
+2. Decide whether `scripts/reconstruction_dev.py` should remain a maintained developer entry point.
+3. Add `.tmp-mpl/` to `.gitignore`.
+4. Verify exported `.npz` files contain all metadata needed after a run.
 5. Keep `.npz` measurement loading working, but defer schema expansion until real CRISP/IR and simulation files are available.
-6. Decide whether stale `measurement_box.py` should be deleted or folded into the new window structure.
-7. Verify exported `.npz` files contain all metadata needed after a run.
-8. Add `.tmp-mpl/` to `.gitignore`.
-9. Clean Ruff errors in source files.
-10. Decide whether basedpyright should gate CI now or after PySide/test typing noise is reduced.
+6. Clean Ruff errors in source files.
+7. Decide whether basedpyright should gate CI now or after PySide/test typing noise is reduced.
 
 ## Useful Commands
 
@@ -418,6 +419,6 @@ Runs the GUI app in a normal desktop session.
 
 ## Bottom Line
 
-The project is in a good place for the next structural step: the numerical core and active tests are alive, the GUI starts, and the first reconstruction workflow exists. The main product risk is now UI shape rather than raw capability: the main window carries too much setup machinery for the app to feel like a focused workbench.
+The project is in a good place for the next structural step: the numerical core and active tests are alive, the GUI starts, the first reconstruction workflow exists, and the main window now reads like a focused plotting workbench.
 
-The best next move is to make the app feel like the intended workflow: large time/frequency plots in the center, optional windows for toy-model generation and reconstruction settings, and file operations in menus. The exact real-data schemas can wait until the CRISP/IR and simulation examples are available.
+The best next move is to finish the cleanup pass around this refactor and verify export metadata now that the workflow shell is in place. The exact real-data schemas can wait until the CRISP/IR and simulation examples are available.

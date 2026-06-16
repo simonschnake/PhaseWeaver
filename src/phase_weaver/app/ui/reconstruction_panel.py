@@ -3,17 +3,12 @@ from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
 
 import phase_weaver.app.config as cfg
 
-from ..state import (
-    MeasurementState,
-    ReconstructionState,
-)
+from ..state import MeasurementState, ReconstructionState
 from .option_selector_box import MultiOptionSelectorBox, OptionSelectorBox
 
 
-class ControlsPanel(QWidget):
+class ReconstructionPanel(QWidget):
     changed = Signal()
-    export_requested = Signal()
-    measurements_load_requested = Signal()
     reconstruction_requested = Signal()
     reconstruction_auto_toggled = Signal(bool)
 
@@ -68,12 +63,6 @@ class ControlsPanel(QWidget):
         layout.addWidget(self.stop_condition_box)
         # layout.addWidget(self.band_limit_box)
 
-        self.load_measurements_button = QPushButton("Load Measurements")
-        self.load_measurements_button.clicked.connect(
-            self.measurements_load_requested.emit
-        )
-        layout.addWidget(self.load_measurements_button)
-
         self.auto_reconstruct_button = QPushButton("Auto Reconstruction: On")
         self.auto_reconstruct_button.setCheckable(True)
         self.auto_reconstruct_button.setChecked(True)
@@ -87,9 +76,6 @@ class ControlsPanel(QWidget):
         self.reconstruct_button.clicked.connect(self.reconstruction_requested.emit)
         layout.addWidget(self.reconstruct_button)
 
-        self.export_button = QPushButton("Export Data")
-        self.export_button.clicked.connect(self.export_requested.emit)
-        layout.addWidget(self.export_button)
         layout.addStretch(1)
 
     def get_reconstruction_state(self) -> ReconstructionState:

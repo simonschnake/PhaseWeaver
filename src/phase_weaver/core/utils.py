@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.optimize import least_squares
 
 
 def trapz_uniform(dt: float, y: np.ndarray) -> float:
