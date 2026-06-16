@@ -344,24 +344,26 @@ class CutAfterNthZeroFromPeak(TimeConstraint):
         imax = int(np.argmax(x))
         y = x.copy()
 
-        # Links vom Maximum:
-        # Alle Indizes mit x <= threshold, dann die n-te von innen nach außen.
+        # On the left, find threshold hits before the peak and trim at the
+        # n-th hit when moving outward. If keep_crossing is enabled, keep the
+        # full crossing lobe by trimming at the next farther hit instead.
         left_hits = np.where(x[:imax] <= self.threshold)[0]
         if left_hits.size >= self.n:
             left_cut = int(left_hits[-self.n])
-            if self.keep_crossing:
-                y[:left_cut] = 0.0
-            else:
+            if self.keep_crossing and left_hits.size > self.n:
+                left_cut = int(left_hits[-(self.n + 1)])
+            if not self.keep_crossing or left_hits.size > self.n:
                 y[: left_cut + 1] = 0.0
 
-        # Rechts vom Maximum:
-        # Alle Indizes mit x <= threshold, dann die n-te nach außen.
+        # On the right, find threshold hits after the peak and trim at the
+        # n-th hit when moving outward. If keep_crossing is enabled, keep the
+        # full crossing lobe by trimming at the next farther hit instead.
         right_hits = np.where(x[imax + 1 :] <= self.threshold)[0]
         if right_hits.size >= self.n:
             right_cut = int(imax + 1 + right_hits[self.n - 1])
-            if self.keep_crossing:
-                y[right_cut + 1 :] = 0.0
-            else:
+            if self.keep_crossing and right_hits.size > self.n:
+                right_cut = int(imax + 1 + right_hits[self.n])
+            if not self.keep_crossing or right_hits.size > self.n:
                 y[right_cut:] = 0.0
 
         prof.values = y
