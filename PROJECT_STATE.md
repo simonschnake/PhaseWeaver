@@ -80,9 +80,9 @@ If the goal is to keep PhaseWeaver useful while the UI is being reworked, the im
 
 - Branch: `main`
 - Tracking: `origin/main`
-- Local status: `main` is ahead of `origin/main` by 17 commits
-- Latest commit: `b0635bb`
-- Worktree state: modified
+- Local status: `main` is ahead of `origin/main` by 18 commits
+- Latest commit: `02671e9`
+- Worktree state: clean
 - Package version: `0.4.0`
 - Python package layout: `src/phase_weaver`
 - Main executable: `phase_weaver = phase_weaver.app:main`
@@ -96,14 +96,7 @@ If the goal is to keep PhaseWeaver useful while the UI is being reworked, the im
 
 Current notable uncommitted paths:
 
-- `src/phase_weaver/app/ui/controls_panel.py` is deleted
-- `src/phase_weaver/app/ui/measurement_box.py` is deleted
-- `src/phase_weaver/app/ui/main_window.py`
-- `src/phase_weaver/app/ui/reconstruction_panel.py`
-- `scripts/reconstruction_dev.py`
-- `src/phase_weaver/core/utils.py`
-- `tests/app/test_controls_panel.py`
-- `PROJECT_STATE.md`
+- none
 
 ## What The App Does Today
 
