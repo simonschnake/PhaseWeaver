@@ -225,7 +225,9 @@ class MainWindow(QMainWindow):
         prof_input = self.logic.compute_input_profile(state)
         ff_input = self.logic.compute_input_formfactor(prof_input)
         self.plot_panel.render_input(prof_input, ff_input)
-        self.plot_panel.render_measurements(self.logic.loaded_measurements)
+        self.plot_panel.render_measurements(
+            self.logic.visible_measurements(ff_input, state.measurement)
+        )
 
     def run_reconstruction_requested(self) -> None:
         state = self.get_controls_state()
@@ -262,7 +264,9 @@ class MainWindow(QMainWindow):
 
         prof_recon.charge = prof_input.charge
         self.plot_panel.render_input(prof_input, ff_input)
-        self.plot_panel.render_measurements(self.logic.loaded_measurements)
+        self.plot_panel.render_measurements(
+            self.logic.visible_measurements(ff_input, state.measurement)
+        )
         self.plot_panel.render_reconstruction(prof_recon, ff_recon)
         self.update_summary(summary)
 

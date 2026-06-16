@@ -1,5 +1,6 @@
 from PySide6.QtWidgets import QApplication
 
+from phase_weaver.app.config import MEASUREMENT_MODE
 from phase_weaver.app.ui.main_window import MainWindow
 from phase_weaver.app.ui.reconstruction_panel import ReconstructionPanel
 from phase_weaver.app.ui.toy_model_panel import ToyModelPanel
@@ -102,3 +103,17 @@ def test_main_window_hosts_setup_panels_in_external_windows():
     assert window.get_controls_state().reconstruction == (
         window.reconstruction_panel.get_reconstruction_state()
     )
+
+
+def test_main_window_renders_active_measurement_points():
+    _app()
+    window = MainWindow()
+    window.reconstruction_panel.measurement_box.selected_modes = {
+        MEASUREMENT_MODE.CRISP,
+        MEASUREMENT_MODE.INFRARED,
+    }
+
+    window.redraw_input()
+
+    assert window.plot_panel.measurement_labels == ["CRISP", "IR"]
+    assert len(window.plot_panel.measurement_lines) == 2

@@ -88,6 +88,51 @@ def test_app_logic_uses_loaded_measurements_over_simulated(tmp_path):
     assert_allclose(measurements[0].freq, [10.0, 20.0])
 
 
+def test_app_logic_visible_measurements_follow_active_bands():
+    logic = AppLogic()
+    state = ControlsState(
+        scenario=ProfileModelState(),
+        measurement=MeasurementState(crisp=True, infrared=True),
+        reconstruction=ReconstructionState(phase_init_mode=PHASE_INIT_MODE.ZERO),
+    )
+    prof = ProfileModel(state.scenario).compute_profile()
+    ff = prof.to_form_factor()
+
+    visible = logic.visible_measurements(ff, state.measurement)
+
+    assert [item.label for item in visible] == ["CRISP", "IR"]
+    assert np.all(visible[0].measured.freq <= 60e12)
+    assert np.all(visible[1].measured.freq >= 120e12)
+
+
+def test_app_logic_visible_measurements_prefer_loaded(tmp_path):
+    path = tmp_path / "measurement.npz"
+    np.savez(
+        path,
+        freq_hz_0=np.array([10.0, 20.0]),
+        mag_0=np.array([0.9, 0.7]),
+        label_0=np.array("Loaded CRISP"),
+        freq_hz_1=np.array([130.0, 150.0]),
+        mag_1=np.array([0.6, 0.5]),
+        label_1=np.array("Loaded IR"),
+    )
+
+    logic = AppLogic()
+    logic.load_measurements(path)
+    state = ControlsState(
+        scenario=ProfileModelState(),
+        measurement=MeasurementState(crisp=True, infrared=True),
+        reconstruction=ReconstructionState(phase_init_mode=PHASE_INIT_MODE.ZERO),
+    )
+    prof = ProfileModel(state.scenario).compute_profile()
+    ff = prof.to_form_factor()
+
+    visible = logic.visible_measurements(ff, state.measurement)
+
+    assert [item.label for item in visible] == ["Loaded CRISP", "Loaded IR"]
+    assert_allclose(visible[0].measured.freq, [10.0, 20.0])
+
+
 def test_app_logic_export_writes_measurements_and_summary(tmp_path):
     logic = AppLogic()
     measurement_path = tmp_path / "measurement.npz"

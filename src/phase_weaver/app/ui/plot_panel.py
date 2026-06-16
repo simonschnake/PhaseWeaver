@@ -225,7 +225,9 @@ class PlotPanel(QWidget):
         self, prof_recon: Profile | None, formfactor_recon: FormFactor | None
     ):
         if self.time_model is None:
-            raise ValueError("Time model is not initialized. Call render_input() first.")
+            raise ValueError(
+                "Time model is not initialized. Call render_input() first."
+            )
         if self.spectrum_model is None:
             raise ValueError(
                 "Spectrum model is not initialized. Call render_input() first."
@@ -271,7 +273,7 @@ class PlotPanel(QWidget):
                 self._log_mag(item.measured.mag),
                 pen=None,
                 symbol="o",
-                symbolSize=9,
+                symbolSize=4,
                 symbolPen=pg.mkPen(color, width=2),
                 symbolBrush=pg.mkBrush(color),
             )
@@ -292,9 +294,13 @@ class PlotPanel(QWidget):
 
     def _render_time(self) -> None:
         if self.time_model is None:
-            raise ValueError("Time model is not initialized. Call render_input() first.")
+            raise ValueError(
+                "Time model is not initialized. Call render_input() first."
+            )
 
-        self.line_current.setData(self.time_model.t_ui, self.time_model.current_input_ui)
+        self.line_current.setData(
+            self.time_model.t_ui, self.time_model.current_input_ui
+        )
         recon_y = self.time_model.current_recon_ui
         if recon_y is not None:
             self.line_recon.setData(self.time_model.t_ui, recon_y)
@@ -326,7 +332,9 @@ class PlotPanel(QWidget):
 
     def _render_fwhm(self) -> None:
         if self.time_model is None:
-            raise ValueError("Time model is not initialized. Call render_input() first.")
+            raise ValueError(
+                "Time model is not initialized. Call render_input() first."
+            )
 
         visible_lines = self.plot_controls.visible_lines
         show_fwhm = self.plot_controls.show_fwhm
@@ -368,7 +376,9 @@ class PlotPanel(QWidget):
     def _apply_time_axes(self) -> None:
         model = self.time_model
         if model is None:
-            raise ValueError("Time model is not initialized. Call render_input() first.")
+            raise ValueError(
+                "Time model is not initialized. Call render_input() first."
+            )
         self.canvas.time_plot.setXRange(model.t_min_ui, model.t_max_ui, padding=0.0)
         self.canvas.time_plot.enableAutoRange(axis="y")
 
@@ -456,9 +466,7 @@ class PlotPanel(QWidget):
         )
 
         self.line_current.setPen(pg.mkPen(colors[0], width=LINE_WIDTH))
-        self.line_recon.setPen(
-            pg.mkPen(colors[1], width=LINE_WIDTH, style=Qt.DashLine)
-        )
+        self.line_recon.setPen(pg.mkPen(colors[1], width=LINE_WIDTH, style=Qt.DashLine))
         self.line_mag.setPen(pg.mkPen(colors[0], width=LINE_WIDTH))
         self.line_mag_recon.setPen(
             pg.mkPen(colors[1], width=LINE_WIDTH, style=Qt.DashLine)
@@ -502,10 +510,10 @@ class PlotPanel(QWidget):
             and self.time_model is not None
             and self.time_model.current_recon_ui is not None
         ):
-            time_items.append(
-                ("reconstructed", colors[1], Qt.PenStyle.DashLine, False)
-            )
-        self.canvas.time_legend.set_items(time_items, theme.legend_background, theme.text)
+            time_items.append(("reconstructed", colors[1], Qt.PenStyle.DashLine, False))
+        self.canvas.time_legend.set_items(
+            time_items, theme.legend_background, theme.text
+        )
 
         spectrum_items = []
         if PLOT_LINE_MODE.MAG_INPUT in visible:
@@ -515,7 +523,9 @@ class PlotPanel(QWidget):
             and self.spectrum_model is not None
             and self.spectrum_model.mag_recon_ui is not None
         ):
-            spectrum_items.append(("|F| (recon)", colors[1], Qt.PenStyle.DashLine, False))
+            spectrum_items.append(
+                ("|F| (recon)", colors[1], Qt.PenStyle.DashLine, False)
+            )
         if PLOT_LINE_MODE.PHASE_INPUT in visible:
             spectrum_items.append(
                 ("phase (input)", colors[2], Qt.PenStyle.SolidLine, False)

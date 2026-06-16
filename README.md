@@ -10,6 +10,14 @@ You shape a time-domain profile (background + spike), and PhaseWeaver immediatel
 
 It enforces simple physical constraints (non-negativity, centering, fixed total charge) and is designed for quick “what-if” exploration and sharing with colleagues.
 
+## Project Status
+
+As of 2026-06-16, the interactive reconstruction workflow is working end to end:
+
+- input profile and spectrum plots update live from the toy model controls
+- magnitude-only reconstruction is overlaid against the input for direct comparison
+- measurement overlays now follow the active CRISP / IR selections, and loaded measurement files still take precedence when present
+
 ## Prerequisites: `uv`
 
 PhaseWeaver uses **uv** to install and run the app as a “tool” (isolated environment, installs an executable onto your PATH).

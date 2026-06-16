@@ -218,6 +218,42 @@ class AppLogic:
             return tuple(item.measured for item in self.loaded_measurements), "loaded"
         return self.compute_measured_formfactor(form_factor, measurement_state), "simulated"
 
+    def visible_measurements(
+        self, form_factor: FormFactor, measurement_state: MeasurementState
+    ) -> tuple[LoadedMeasurement, ...]:
+        if self.loaded_measurements:
+            return self.loaded_measurements
+
+        visible: list[LoadedMeasurement] = []
+        freq = form_factor.grid.f_pos
+        mag = form_factor.mag
+
+        if measurement_state.crisp:
+            mask_crisp = (freq >= CRISP_MIN_HZ) & (freq <= CRISP_MAX_HZ)
+            visible.append(
+                LoadedMeasurement(
+                    label="CRISP",
+                    measured=MeasuredFormFactor(
+                        freq=freq[mask_crisp],
+                        mag=mag[mask_crisp] * measurement_state.crisp_scale,
+                    ),
+                )
+            )
+
+        if measurement_state.infrared:
+            mask_ir = (freq >= IR_MIN_HZ) & (freq <= IR_MAX_HZ)
+            visible.append(
+                LoadedMeasurement(
+                    label="IR",
+                    measured=MeasuredFormFactor(
+                        freq=freq[mask_ir],
+                        mag=mag[mask_ir] * measurement_state.infrared_scale,
+                    ),
+                )
+            )
+
+        return tuple(visible)
+
     def _build_reconstruction(
         self,
         grid: Grid,
