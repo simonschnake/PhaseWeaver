@@ -114,6 +114,15 @@ class MainWindow(QMainWindow):
         sync_mpl_to_qt(app, self.plot_panel.canvas.figure)
         self.plot_panel.set_theme(theme)
         self.theme_actions[theme].setChecked(True)
+        central = self.centralWidget()
+        if central is not None:
+            central.updateGeometry()
+            layout = central.layout()
+            if layout is not None:
+                layout.invalidate()
+                layout.activate()
+        self.updateGeometry()
+        self.repaint()
 
     def schedule_updates(self) -> None:
         self.redraw_timer.start(10)

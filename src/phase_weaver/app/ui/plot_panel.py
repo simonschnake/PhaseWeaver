@@ -148,7 +148,12 @@ class PlotPanel(QWidget):
     def set_theme(self, theme: APP_THEME) -> None:
         self.theme = theme
         self._apply_theme_to_plot()
-        self.canvas.draw_idle()
+        self.refresh_canvas()
+
+    def refresh_canvas(self) -> None:
+        self.canvas.draw()
+        self.canvas.updateGeometry()
+        self.updateGeometry()
 
     def _render_time(self) -> None:
         if self.time_model is None:

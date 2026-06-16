@@ -62,15 +62,9 @@ def sync_mpl_to_qt(app, fig=None, scale: float = 0.95) -> None:
     """
     - Sets rcParams (for future text)
     - If fig is passed, also force-applies to existing axes/text (so it always works).
-    - Also overrides figure.dpi for GUI (critical if your mplstyle sets it high).
     """
     family = app.font().family()
     pt = _qt_font_point_size(app) * scale
-
-    # --- Critical for embedded GUIs: don't use notebook-like DPI ---
-    # If your mplstyle sets figure.dpi=200, it will look huge in Qt.
-    mpl.rcParams["figure.dpi"] = 100
-    mpl.rcParams["savefig.dpi"] = 200  # keep exports crisp if you want
 
     # --- Font family/size defaults ---
     mpl.rcParams["font.family"] = "sans-serif"
@@ -84,9 +78,6 @@ def sync_mpl_to_qt(app, fig=None, scale: float = 0.95) -> None:
 
     if fig is None:
         return
-
-    # --- Force-apply to existing figure elements (this is what makes it "always works") ---
-    fig.set_dpi(mpl.rcParams["figure.dpi"])
 
     for ax in fig.axes:
         ax.title.set_fontsize(mpl.rcParams["axes.titlesize"])
