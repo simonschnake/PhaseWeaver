@@ -19,11 +19,12 @@ class GaussianGroup(ControlBox):
         parent=None,
     ) -> None:
         self._include_center = include_center
+        group_specs = dict(specs)
 
         if not include_center:
-            specs.pop("center_fs", None)
+            group_specs.pop("center_fs", None)
 
-        super().__init__(title, specs, checkable, checked, parent)
+        super().__init__(title, group_specs, checkable, checked, parent)
 
     def get_params(self) -> AsymSuperGaussParams:
         center = 0.0
@@ -45,7 +46,6 @@ class GaussianGroup(ControlBox):
 
     def set_params(self, params: AsymSuperGaussParams) -> None:
         values = {
-            "center_fs": params.center * S_TO_T,
             "width_fs": params.width * S_TO_T,
             "skew": params.skew,
             "order": params.order,

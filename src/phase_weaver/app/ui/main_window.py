@@ -1,7 +1,8 @@
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
     QApplication,
+    QDockWidget,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -14,9 +15,11 @@ from PySide6.QtWidgets import (
 from phase_weaver.qt_theme import APP_THEME, set_app_theme
 
 from ..logic import AppLogic, ReconstructionSummary
+from ..state import ControlsState
 from ..utils import load_app_icon
 from .controls_panel import ControlsPanel
 from .plot_panel import PlotPanel
+from .toy_model_panel import ToyModelPanel
 
 
 class MainWindow(QMainWindow):
@@ -30,6 +33,7 @@ class MainWindow(QMainWindow):
         self.plot_panel: PlotPanel = PlotPanel(theme=theme)
 
         self.controls_panel = ControlsPanel()
+        self.toy_model_panel = ToyModelPanel()
         self.reconstruct_timer = QTimer(self)
         self.reconstruct_timer.setSingleShot(True)
         self.reconstruct_timer.timeout.connect(self.run_reconstruction_requested)
@@ -49,8 +53,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(body, 1)
         layout.addWidget(self.summary_label)
         self.setCentralWidget(central)
+        self._create_toy_model_dock()
         self.resize(1800, 650)
 
+        self.toy_model_panel.changed.connect(self.schedule_updates)
         self.controls_panel.changed.connect(self.schedule_updates)
         self.controls_panel.export_requested.connect(self.export_requested)
         self.controls_panel.measurements_load_requested.connect(
@@ -71,8 +77,20 @@ class MainWindow(QMainWindow):
         self.schedule_updates()
         self.update_summary(self.logic.reconstruction_summary)
 
+    def _create_toy_model_dock(self) -> None:
+        self.toy_model_dock = QDockWidget("Toy Model", self)
+        self.toy_model_dock.setObjectName("toyModelDock")
+        self.toy_model_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.toy_model_dock.setWidget(self.toy_model_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.toy_model_dock)
+        self.toy_model_dock.hide()
+
     def _create_menus(self) -> None:
         view_menu = self.menuBar().addMenu("View")
+        view_menu.addAction(self.toy_model_dock.toggleViewAction())
+        view_menu.addSeparator()
         theme_menu = view_menu.addMenu("Theme")
         lines_menu = view_menu.addMenu("Lines")
         self.fwhm_action = self.plot_panel.plot_controls.fwhm_action
@@ -107,6 +125,13 @@ class MainWindow(QMainWindow):
         show_all_action = QAction("Show all", self)
         show_all_action.triggered.connect(self.plot_panel.plot_controls.show_all_lines)
         lines_menu.addAction(show_all_action)
+
+    def get_controls_state(self) -> ControlsState:
+        return ControlsState(
+            scenario=self.toy_model_panel.get_scenario_state(),
+            measurement=self.controls_panel.get_measurement_state(),
+            reconstruction=self.controls_panel.get_reconstruction_state(),
+        )
 
     def set_theme(self, theme: APP_THEME) -> None:
         if theme == self.theme:
@@ -148,14 +173,14 @@ class MainWindow(QMainWindow):
             self.update_summary(self.logic.reconstruction_summary)
 
     def redraw_input(self) -> None:
-        state = self.controls_panel.get_state()
+        state = self.get_controls_state()
         prof_input = self.logic.compute_input_profile(state)
         ff_input = self.logic.compute_input_formfactor(prof_input)
         self.plot_panel.render_input(prof_input, ff_input)
         self.plot_panel.render_measurements(self.logic.loaded_measurements)
 
     def run_reconstruction_requested(self) -> None:
-        state = self.controls_panel.get_state()
+        state = self.get_controls_state()
         prof_input = self.logic.compute_input_profile(state)
         ff_input = self.logic.compute_input_formfactor(prof_input)
         measurements, source = self.logic.active_measurements(ff_input, state.measurement)
@@ -227,7 +252,7 @@ class MainWindow(QMainWindow):
             path,
             self.plot_panel.time_model,
             self.plot_panel.spectrum_model,
-            controls_state=self.controls_panel.get_state(),
+            controls_state=self.get_controls_state(),
             summary=self.logic.reconstruction_summary,
         )
 

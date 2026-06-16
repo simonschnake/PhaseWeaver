@@ -1,15 +1,12 @@
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
 
 import phase_weaver.app.config as cfg
 
 from ..state import (
     MeasurementState,
-    ProfileModelState,
     ReconstructionState,
-    ControlsState,
 )
-from .gaussian_group import GaussianGroup
 from .option_selector_box import MultiOptionSelectorBox, OptionSelectorBox
 
 
@@ -22,22 +19,6 @@ class ControlsPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-
-        self.background_box = GaussianGroup(
-            "Background",
-            specs=cfg.BACKGROUND_SPEC,
-            include_center=False,
-        )
-        self.spike_box = GaussianGroup(
-            "Spike",
-            specs=cfg.SPIKE_SPEC,
-        )
-        self.spike2_box = GaussianGroup(
-            "Spike 2",
-            specs=cfg.SPIKE_SPEC,
-            checkable=True,
-            checked=cfg.PEAK2_ENABLED,
-        )
 
         # self.mag_init_box = OptionSelectorBox(
         #    "Magnitude Init", enum_cls=cfg.MAG_INIT_MODE, default=cfg.MAG_INIT_DEFAULT
@@ -68,9 +49,6 @@ class ControlsPanel(QWidget):
         # self.band_limit_box = BandLimitBox()
 
         for widget in (
-            self.background_box,
-            self.spike_box,
-            self.spike2_box,
             self.phase_init_box,
             self.measurement_box,
             self.time_constraint_box,
@@ -81,26 +59,20 @@ class ControlsPanel(QWidget):
         ):
             widget.changed.connect(self.changed.emit)
 
-        peak_col = QVBoxLayout()
-        peak_col.addWidget(self.background_box)
-        peak_col.addWidget(self.spike_box)
-        peak_col.addWidget(self.spike2_box)
-        peak_col.addStretch(1)
-
-        recon_col = QVBoxLayout()
-        # recon_col.addWidget(self.mag_init_box)
-        recon_col.addWidget(self.phase_init_box)
-        recon_col.addWidget(self.measurement_box)
-        recon_col.addWidget(self.time_constraint_box)
-        recon_col.addWidget(self.frequency_constraint_box)
-        recon_col.addWidget(self.stop_condition_box)
-        # recon_col.addWidget(self.band_limit_box)
+        layout = QVBoxLayout(self)
+        # layout.addWidget(self.mag_init_box)
+        layout.addWidget(self.phase_init_box)
+        layout.addWidget(self.measurement_box)
+        layout.addWidget(self.time_constraint_box)
+        layout.addWidget(self.frequency_constraint_box)
+        layout.addWidget(self.stop_condition_box)
+        # layout.addWidget(self.band_limit_box)
 
         self.load_measurements_button = QPushButton("Load Measurements")
         self.load_measurements_button.clicked.connect(
             self.measurements_load_requested.emit
         )
-        recon_col.addWidget(self.load_measurements_button)
+        layout.addWidget(self.load_measurements_button)
 
         self.auto_reconstruct_button = QPushButton("Auto Reconstruction: On")
         self.auto_reconstruct_button.setCheckable(True)
@@ -109,30 +81,16 @@ class ControlsPanel(QWidget):
         self.auto_reconstruct_button.toggled.connect(
             self.reconstruction_auto_toggled.emit
         )
-        recon_col.addWidget(self.auto_reconstruct_button)
+        layout.addWidget(self.auto_reconstruct_button)
 
         self.reconstruct_button = QPushButton("Run Reconstruction")
         self.reconstruct_button.clicked.connect(self.reconstruction_requested.emit)
-        recon_col.addWidget(self.reconstruct_button)
+        layout.addWidget(self.reconstruct_button)
 
         self.export_button = QPushButton("Export Data")
         self.export_button.clicked.connect(self.export_requested.emit)
-        recon_col.addWidget(self.export_button)
-
-        recon_col.addStretch(1)
-
-        layout = QHBoxLayout(self)
-        layout.addLayout(peak_col, 1)
-        layout.addLayout(recon_col, 1)
-
-    def get_scenario_state(self) -> ProfileModelState:
-        state = ProfileModelState(
-            background=self.background_box.get_params(),
-            peak=self.spike_box.get_params(),
-            peak2_enabled=self.spike2_box.is_enabled_component(),
-            peak2=self.spike2_box.get_params(),
-        )
-        return state
+        layout.addWidget(self.export_button)
+        layout.addStretch(1)
 
     def get_reconstruction_state(self) -> ReconstructionState:
         # phase_end_enabled, start_freq_hz, phase_at_300_thz = (
@@ -159,13 +117,6 @@ class ControlsPanel(QWidget):
                 meas_state.infrared = True
 
         return meas_state
-
-    def get_state(self) -> ControlsState:
-        return ControlsState(
-            scenario=self.get_scenario_state(),
-            measurement=self.get_measurement_state(),
-            reconstruction=self.get_reconstruction_state(),
-        )
 
     def is_auto_reconstruction_enabled(self) -> bool:
         return self.auto_reconstruct_button.isChecked()
