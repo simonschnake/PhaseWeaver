@@ -80,9 +80,9 @@ If the goal is to keep PhaseWeaver useful while the UI is being reworked, the im
 
 - Branch: `main`
 - Tracking: `origin/main`
-- Local status: `main` is ahead of `origin/main` by 18 commits
-- Latest commit: `02671e9`
-- Worktree state: clean
+- Local status: use `git status -sb` for the live ahead/behind snapshot
+- Latest commit: use `git log --oneline -1` for the live HEAD commit
+- Worktree state at last update: clean
 - Package version: `0.4.0`
 - Python package layout: `src/phase_weaver`
 - Main executable: `phase_weaver = phase_weaver.app:main`
