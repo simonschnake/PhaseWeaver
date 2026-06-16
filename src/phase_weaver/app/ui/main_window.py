@@ -69,6 +69,8 @@ class MainWindow(QMainWindow):
     def _create_menus(self) -> None:
         view_menu = self.menuBar().addMenu("View")
         theme_menu = view_menu.addMenu("Theme")
+        lines_menu = view_menu.addMenu("Lines")
+
         self.theme_action_group = QActionGroup(self)
         self.theme_action_group.setExclusive(True)
         self.theme_actions: dict[APP_THEME, QAction] = {}
@@ -83,6 +85,20 @@ class MainWindow(QMainWindow):
             self.theme_action_group.addAction(action)
             theme_menu.addAction(action)
             self.theme_actions[theme] = action
+
+        self.line_action_group = QActionGroup(self)
+        self.line_action_group.setExclusive(False)
+        self.line_actions = {}
+
+        for mode, action in self.plot_panel.plot_controls.line_actions.items():
+            self.line_action_group.addAction(action)
+            lines_menu.addAction(action)
+            self.line_actions[mode] = action
+
+        lines_menu.addSeparator()
+        show_all_action = QAction("Show all", self)
+        show_all_action.triggered.connect(self.plot_panel.plot_controls.show_all_lines)
+        lines_menu.addAction(show_all_action)
 
     def set_theme(self, theme: APP_THEME) -> None:
         if theme == self.theme:
