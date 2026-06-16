@@ -37,3 +37,8 @@ phase_weaver = ["*.png", "stylelib/*.mplstyle"]
 [tool.basedpyright]
 typeCheckingMode = "standard"
 reportUnannotatedClassAttribute = false
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.1.0",
+]

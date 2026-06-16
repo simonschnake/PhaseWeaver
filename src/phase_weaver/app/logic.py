@@ -21,6 +21,7 @@ from phase_weaver.core.measurement import MeasuredFormFactor
 from phase_weaver.core.reconstruction import (
     GerchbergSaxton,
     ReconstructionAlgorithm,
+    ReconstructionHistory,
 )
 
 from .plot_model import SpectrumPlotModel, TimePlotModel
@@ -41,6 +42,7 @@ class ReconstructionSummary:
     stop_reason: str = "not_run"
     measurement_error: float | None = None
     status: str = "not_run"
+    history: ReconstructionHistory | None = None
 
 
 def _decode_label(value: object, fallback: str) -> str:
@@ -165,6 +167,7 @@ class AppLogic:
             stop_reason=reconstruction.last_stop_reason,
             measurement_error=reconstruction.last_measurement_error,
             status="finished",
+            history=reconstruction.history,
         )
         self.reconstruction_summary = summary
         return prof_recon, ff_recon, summary
@@ -271,6 +274,8 @@ class AppLogic:
                 else summary.measurement_error
             ),
         }
+        if summary.history is not None:
+            payload.update(summary.history.as_arrays())
 
         if controls_state is not None:
             payload.update(self._state_payload(controls_state))

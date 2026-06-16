@@ -28,6 +28,10 @@ from phase_weaver.core.reconstruction import (
     MeasurementsStoppedChanging,
     MinIter,
     PhaseStoppedChanging,
+    ReconstructionAlgorithm,
+    ReconstructionHistory,
+    StopCriterion,
+    _extension_min_positive,
     _high_frequency_decay_bounds,
     minimum_phase_from_mag,
 )
@@ -55,6 +59,56 @@ def test_minimum_phase_from_mag_returns_finite(grid: Grid):
 
     assert phase.shape == mag.shape
     assert np.isfinite(phase).all()
+
+
+def test_minimum_phase_from_mag_rejects_wrong_shape(grid: Grid):
+    with pytest.raises(ValueError, match="mag_pos must have shape"):
+        minimum_phase_from_mag(grid, np.ones(3))
+
+
+def test_reconstruction_history_as_arrays():
+    history = ReconstructionHistory.empty()
+    history.append(
+        iteration=2,
+        measurement_error=0.1,
+        phase_delta_mse=0.2,
+        profile_delta_mse=0.3,
+    )
+
+    arrays = history.as_arrays()
+
+    assert_allclose(arrays["reconstruction_history_iteration"], [2])
+    assert arrays["reconstruction_history_iteration"].dtype == int
+    assert_allclose(arrays["reconstruction_history_measurement_error"], [0.1])
+    assert_allclose(arrays["reconstruction_history_phase_delta_mse"], [0.2])
+    assert_allclose(arrays["reconstruction_history_profile_delta_mse"], [0.3])
+
+
+def test_extension_min_positive_handles_empty_zero_and_nonfinite():
+    eps = np.finfo(float).eps
+
+    assert _extension_min_positive(np.array([])) == pytest.approx(eps)
+    assert _extension_min_positive(np.array([0.0, -1.0])) == pytest.approx(eps)
+    assert _extension_min_positive(np.array([np.nan])) == pytest.approx(eps)
+    assert _extension_min_positive(np.array([2.0])) == pytest.approx(2e-12)
+
+
+def test_stop_criterion_base_defaults_and_abstract_run_body():
+    class DummyStop(StopCriterion):
+        def reset(self) -> None:
+            pass
+
+        def update(self, prof=None, ff=None) -> None:
+            pass
+
+    stop = DummyStop()
+    assert stop.stop is False
+    assert stop.direct_stop is False
+    assert stop.participates_in_all_stop is True
+    assert stop() is False
+    assert stop._criteria == (stop,)
+
+    assert ReconstructionAlgorithm.run(object()) is None
 
 
 def test_maxiter_stops_after_n_updates():
@@ -295,6 +349,31 @@ def test_gerchberg_saxton_run_can_be_forced_to_stop_quickly(
     assert np.isfinite(area)
     assert abs(area - 1.0) < 1e-8
     assert abs(first_moment(grid.t, prof.values, grid.dt)) < 2.0 * grid.dt
+
+
+def test_gerchberg_saxton_records_convergence_history(
+    grid: Grid, measured_mag: np.ndarray
+):
+    measured = MeasuredFormFactor(freq=grid.f_pos, mag=measured_mag)
+    alg = GerchbergSaxton(
+        grid=grid,
+        measurements=(measured,),
+        reconstruction_state=SimpleNamespace(phase_init_mode=PHASE_INIT_MODE.ZERO),
+    )
+    alg.stop = MaxIter(3)
+
+    _prof, _ff = alg.run()
+    history = alg.history
+
+    assert isinstance(history, ReconstructionHistory)
+    assert history.iterations == [1, 2, 3]
+    assert len(history.measurement_error) == alg.last_iterations
+    assert len(history.phase_delta_mse) == alg.last_iterations
+    assert len(history.profile_delta_mse) == alg.last_iterations
+    assert_allclose(history.measurement_error[-1], alg.last_measurement_error)
+    assert np.isfinite(history.measurement_error).all()
+    assert np.isfinite(history.phase_delta_mse).all()
+    assert np.isfinite(history.profile_delta_mse).all()
 
 
 def test_default_app_reconstruction_stops_on_convergence_before_max_iter():

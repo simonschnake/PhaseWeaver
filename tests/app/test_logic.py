@@ -16,6 +16,7 @@ from phase_weaver.app.state import (
     ProfileModelState,
     ReconstructionState,
 )
+from phase_weaver.core.reconstruction import ReconstructionHistory
 
 
 def test_load_measurements_npz_single_pair(tmp_path):
@@ -113,6 +114,12 @@ def test_app_logic_export_writes_measurements_and_summary(tmp_path):
         stop_reason="max_iter",
         measurement_error=0.123,
         status="finished",
+        history=ReconstructionHistory(
+            iterations=[1, 2],
+            measurement_error=[0.3, 0.123],
+            phase_delta_mse=[1e-2, 1e-4],
+            profile_delta_mse=[2e-2, 2e-4],
+        ),
     )
 
     export_path = tmp_path / "export.npz"
@@ -130,6 +137,14 @@ def test_app_logic_export_writes_measurements_and_summary(tmp_path):
         assert data["reconstruction_iterations"].item() == 12
         assert data["measurement_label_0"].item() == "measurement 1"
         assert_allclose(data["measurement_freq_hz_0"], [10.0, 20.0])
+        assert_allclose(data["reconstruction_history_iteration"], [1, 2])
+        assert_allclose(
+            data["reconstruction_history_measurement_error"], [0.3, 0.123]
+        )
+        assert_allclose(data["reconstruction_history_phase_delta_mse"], [1e-2, 1e-4])
+        assert_allclose(
+            data["reconstruction_history_profile_delta_mse"], [2e-2, 2e-4]
+        )
         assert data["phase_init_mode"].item() == "zero"
         assert "Normalize area" in set(data["reconstruction_time_constraints"])
         assert "Blend measured" in set(data["reconstruction_frequency_constraints"])

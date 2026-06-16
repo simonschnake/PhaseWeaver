@@ -217,6 +217,29 @@ def test_profile_copy(grid, gaussian_density):
     assert p1.grid.N == p2.grid.N
 
 
+def test_plain_profile_copy_preserves_values(grid):
+    p1 = Profile(grid=grid, values=np.ones(grid.N), charge=1.0)
+
+    p2 = p1.copy()
+
+    assert isinstance(p2, Profile)
+    assert p2 is not p1
+    assert p2.values is not p1.values
+    assert_allclose(p2.values, p1.values)
+    assert p2.time_constraint is None
+
+
+def test_current_profile_from_profile(grid, gaussian_density):
+    profile = Profile(grid=grid, values=gaussian_density.copy(), charge=2.0)
+
+    current = CurrentProfile.from_profile(profile)
+
+    assert isinstance(current, CurrentProfile)
+    assert current.grid is grid
+    assert current.charge == pytest.approx(2.0)
+    assert_allclose(np.trapezoid(current.values, grid.t), 1.0, atol=1e-12)
+
+
 
 
 def test_dc_normalization_makes_mag0_one(grid, gaussian_density):

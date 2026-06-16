@@ -1,42 +1,97 @@
-from PySide6.QtGui import QColor, QPalette, QFont
+from dataclasses import dataclass
+from enum import StrEnum
+
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
-def set_dark_theme(app: QApplication) -> None:
+
+class APP_THEME(StrEnum):
+    DARK = "Dark"
+    LIGHT = "Light"
+
+
+@dataclass(frozen=True)
+class QtTheme:
+    bg: str
+    panel: str
+    text: str
+    muted: str
+    border: str
+    accent: str
+    hover: str
+    pressed: str
+    highlighted_text: str
+
+
+QT_THEMES = {
+    APP_THEME.DARK: QtTheme(
+        bg="#1e1e1e",
+        panel="#252526",
+        text="#ffffff",
+        muted="#cccccc",
+        border="#444444",
+        accent="#4FC3F7",
+        hover="#2f2f2f",
+        pressed="#1b1b1b",
+        highlighted_text="#000000",
+    ),
+    APP_THEME.LIGHT: QtTheme(
+        bg="#ffffff",
+        panel="#f3f3f3",
+        text="#1f1f1f",
+        muted="#616161",
+        border="#d0d0d0",
+        accent="#007acc",
+        hover="#e8e8e8",
+        pressed="#dcdcdc",
+        highlighted_text="#ffffff",
+    ),
+}
+
+
+def set_app_theme(app: QApplication, theme: APP_THEME = APP_THEME.DARK) -> None:
     """
-    Set a dark theme for the Qt application.
+    Set an Atom / VS Code style theme for the Qt application.
     """
+    theme_def = QT_THEMES[theme]
     app.setStyle("Fusion")
 
-    bg = QColor("#1e1e1e")
-    panel = QColor("#252526")
-    text = QColor("#ffffff")
-    muted = QColor("#cccccc")
-    border = QColor("#444444")
-    accent = QColor("#4FC3F7")
+    bg = QColor(theme_def.bg)
+    panel = QColor(theme_def.panel)
+    text = QColor(theme_def.text)
+    muted = QColor(theme_def.muted)
+    border = QColor(theme_def.border)
+    accent = QColor(theme_def.accent)
 
     pal = QPalette()
-    pal.setColor(QPalette.Window, bg)
-    pal.setColor(QPalette.WindowText, text)
-    pal.setColor(QPalette.Base, panel)          # input background
-    pal.setColor(QPalette.AlternateBase, bg)
-    pal.setColor(QPalette.Text, text)
-    pal.setColor(QPalette.Button, panel)
-    pal.setColor(QPalette.ButtonText, text)
-    pal.setColor(QPalette.ToolTipBase, panel)
-    pal.setColor(QPalette.ToolTipText, text)
-    pal.setColor(QPalette.Highlight, accent)
-    pal.setColor(QPalette.HighlightedText, QColor("#000000"))
-    pal.setColor(QPalette.PlaceholderText, muted)
+    role = QPalette.ColorRole
+    pal.setColor(role.Window, bg)
+    pal.setColor(role.WindowText, text)
+    pal.setColor(role.Base, panel)
+    pal.setColor(role.AlternateBase, bg)
+    pal.setColor(role.Text, text)
+    pal.setColor(role.Button, panel)
+    pal.setColor(role.ButtonText, text)
+    pal.setColor(role.ToolTipBase, panel)
+    pal.setColor(role.ToolTipText, text)
+    pal.setColor(role.Highlight, accent)
+    pal.setColor(role.HighlightedText, QColor(theme_def.highlighted_text))
+    pal.setColor(role.PlaceholderText, muted)
     app.setPalette(pal)
 
-    # Optional: try to align fonts with your mplstyle (falls back if not installed)
-    #app.setFont(QFont("Inter", 10))
-
-    # A small stylesheet for “polish” (borders, sliders, hover states)
     app.setStyleSheet(f"""
         QMainWindow, QWidget {{
             background-color: {bg.name()};
             color: {text.name()};
+        }}
+
+        QMenuBar, QMenu {{
+            background-color: {bg.name()};
+            color: {text.name()};
+            border: 1px solid {border.name()};
+        }}
+        QMenuBar::item:selected, QMenu::item:selected {{
+            background-color: {theme_def.hover};
         }}
 
         QLabel {{
@@ -63,14 +118,14 @@ def set_dark_theme(app: QApplication) -> None:
             border-radius: 6px;
         }}
         QPushButton:hover {{
-            background-color: #2f2f2f;
+            background-color: {theme_def.hover};
         }}
         QPushButton:pressed {{
-            background-color: #1b1b1b;
+            background-color: {theme_def.pressed};
         }}
         QPushButton:checked {{
             background-color: {accent.name()};
-            color: #000000;
+            color: {theme_def.highlighted_text};
             border: 1px solid {accent.name()};
             font-weight: 600;
         }}
@@ -83,6 +138,7 @@ def set_dark_theme(app: QApplication) -> None:
             border: 1px solid {border.name()};
             padding: 4px 6px;
             border-radius: 6px;
+            color: {text.name()};
         }}
 
         QSlider::groove:horizontal {{
@@ -97,3 +153,17 @@ def set_dark_theme(app: QApplication) -> None:
             border-radius: 7px;
         }}
     """)
+
+
+def set_dark_theme(app: QApplication) -> None:
+    """
+    Set a dark theme for the Qt application.
+    """
+    set_app_theme(app, APP_THEME.DARK)
+
+
+def set_light_theme(app: QApplication) -> None:
+    """
+    Set a light theme for the Qt application.
+    """
+    set_app_theme(app, APP_THEME.LIGHT)

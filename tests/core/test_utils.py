@@ -3,8 +3,12 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from phase_weaver.core.utils import (
+    exponential_extend,
     fwhm_highest_peak,
+    gaussian_extend,
+    interpolate_between_functions,
     overlap_weights,
+    quadratic_log_extend,
     safe_real,
     smooth_overlap,
 )
@@ -61,6 +65,11 @@ def test_safe_real_works_for_scalar_inputs():
     assert np.array_equal(y2, np.array(3.0))
     assert y1.dtype == float
     assert y2.dtype == float
+
+
+def test_fwhm_returns_none_for_non_1d_inputs():
+    assert fwhm_highest_peak(np.array([[0.0, 1.0]]), np.array([1.0, 2.0])) is None
+    assert fwhm_highest_peak(np.array([0.0, 1.0]), np.array([[1.0, 2.0]])) is None
 
 
 def test_exact_fwhm_on_symmetric_peak():
@@ -681,3 +690,157 @@ def test_smooth_overlap_does_not_modify_inputs():
     assert_array_equal(y_target, y_target_before)
     assert_array_equal(x_source, x_source_before)
     assert_array_equal(y_source, y_source_before)
+
+
+def test_exponential_extend_interpolates_inside_and_extends_tails():
+    x_source = np.array([0.0, 1.0, 2.0, 3.0])
+    y_source = np.exp(-0.5 * x_source**2)
+    x_target = np.array([-1.0, 0.5, 2.5, 4.0])
+
+    y = exponential_extend(x_target, x_source, y_source)
+
+    assert_allclose(y[1:3], np.interp(x_target[1:3], x_source, y_source))
+    assert np.all(np.isfinite(y))
+    assert np.all(y > 0.0)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"x_target": np.array([[0.0]])}, "must be 1D arrays"),
+        ({"x_source": np.array([0.0, 1.0]), "y_source": np.array([1.0])}, "same length"),
+        ({"x_source": np.array([0.0, 1.0]), "y_source": np.array([1.0, 0.5])}, "Need at least 3"),
+        ({"x_source": np.array([0.0, np.inf, 2.0]), "y_source": np.ones(3)}, "finite"),
+        ({"x_source": np.array([0.0, 2.0, 1.0]), "y_source": np.ones(3)}, "strictly increasing"),
+        ({"power": 0.0}, "power must be positive"),
+    ],
+)
+def test_exponential_extend_validates_inputs(kwargs, match):
+    params = {
+        "x_target": np.array([0.0, 1.0]),
+        "x_source": np.array([0.0, 1.0, 2.0]),
+        "y_source": np.array([1.0, 0.5, 0.25]),
+        "power": 2.0,
+    }
+    params.update(kwargs)
+
+    with pytest.raises(ValueError, match=match):
+        exponential_extend(**params)
+
+
+def test_quadratic_log_extend_interpolates_inside_and_extends_tails():
+    x_source = np.array([0.0, 1.0, 2.0, 3.0])
+    y_source = np.exp(-0.2 * x_source**2 + 0.1 * x_source)
+    x_target = np.array([-1.0, 0.5, 2.5, 4.0])
+
+    y = quadratic_log_extend(x_target, x_source, y_source)
+
+    assert np.all(np.isfinite(y))
+    assert np.all(y > 0.0)
+    assert y[1] == pytest.approx(np.interp(0.5, x_source, y_source))
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"x_target": np.array([[0.0]])}, "must be 1D arrays"),
+        ({"x_source": np.array([0.0, 1.0]), "y_source": np.array([1.0])}, "same length"),
+        ({"x_source": np.array([0.0, 1.0]), "y_source": np.array([1.0, 0.5])}, "Need at least 3"),
+        ({"x_source": np.array([0.0, np.nan, 2.0]), "y_source": np.ones(3)}, "finite"),
+        ({"x_source": np.array([0.0, 2.0, 1.0]), "y_source": np.ones(3)}, "strictly increasing"),
+        ({"y_source": np.array([1.0, 0.0, 0.5])}, "strictly positive"),
+        ({"power": 0.0}, "power must be positive"),
+    ],
+)
+def test_quadratic_log_extend_validates_inputs(kwargs, match):
+    params = {
+        "x_target": np.array([0.0, 1.0]),
+        "x_source": np.array([0.0, 1.0, 2.0]),
+        "y_source": np.array([1.0, 0.5, 0.25]),
+        "power": 2.0,
+    }
+    params.update(kwargs)
+
+    with pytest.raises(ValueError, match=match):
+        quadratic_log_extend(**params)
+
+
+def test_gaussian_extend_interpolates_and_clips_with_min_positive():
+    x_source = np.array([1.0, 2.0, 3.0, 4.0])
+    y_source = np.array([0.0, 0.5, 0.25, 0.125])
+    x_target = np.array([0.0, 1.5, 4.5])
+
+    y = gaussian_extend(x_target, x_source, y_source, n_tail=3, min_positive=1e-9)
+
+    assert np.all(np.isfinite(y))
+    assert np.all(y > 0.0)
+    assert y[1] == pytest.approx(np.interp(1.5, x_source, y_source))
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"x_target": np.array([[0.0]])}, "must be 1D arrays"),
+        ({"x_source": np.array([0.0, 1.0]), "y_source": np.array([1.0])}, "same length"),
+        ({"x_source": np.array([0.0, 1.0]), "y_source": np.array([1.0, 0.5])}, "Need at least 3"),
+        ({"x_target": np.array([0.0, np.inf])}, "x_target must contain only finite"),
+        ({"x_source": np.array([0.0, np.nan, 2.0]), "y_source": np.ones(3)}, "finite"),
+        ({"x_source": np.array([0.0, 2.0, 1.0]), "y_source": np.ones(3)}, "strictly increasing"),
+        ({"n_tail": 1}, "n_tail must satisfy"),
+        ({"y_source": np.array([1.0, 0.0, 0.5])}, "strictly positive"),
+        ({"min_positive": 0.0}, "min_positive must be positive"),
+    ],
+)
+def test_gaussian_extend_validates_inputs(kwargs, match):
+    params = {
+        "x_target": np.array([0.0, 1.0]),
+        "x_source": np.array([0.0, 1.0, 2.0]),
+        "y_source": np.array([1.0, 0.5, 0.25]),
+        "n_tail": 2,
+    }
+    params.update(kwargs)
+
+    with pytest.raises(ValueError, match=match):
+        gaussian_extend(**params)
+
+
+def test_interpolate_between_functions_blends_regions():
+    x = np.array([0.0, 1.0, 2.0, 3.0])
+    f_1 = np.zeros_like(x)
+    f_2 = np.full_like(x, 10.0)
+
+    y = interpolate_between_functions(x, f_1, f_2, x_1=1.0, x_2=3.0)
+
+    assert y[0] == pytest.approx(0.0)
+    assert y[1] == pytest.approx(0.0)
+    assert 0.0 < y[2] < 10.0
+    assert y[3] == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"x": np.array([[0.0]])}, "must be 1D arrays"),
+        ({"f_1": np.array([1.0])}, "same length"),
+        ({"x": np.array([]), "f_1": np.array([]), "f_2": np.array([])}, "must not be empty"),
+        ({"x": np.array([0.0, np.nan])}, "x must contain only finite"),
+        ({"f_1": np.array([0.0, np.inf])}, "f_1 and f_2 must contain only finite"),
+        ({"x": np.array([1.0, 0.0])}, "sorted"),
+        ({"x_1": np.nan}, "x_1 and x_2 must be finite"),
+        ({"x_2": 0.0}, "x_2 must be greater"),
+        ({"power": 0.0}, "power must be positive"),
+    ],
+)
+def test_interpolate_between_functions_validates_inputs(kwargs, match):
+    params = {
+        "x": np.array([0.0, 1.0]),
+        "f_1": np.array([0.0, 0.0]),
+        "f_2": np.array([1.0, 1.0]),
+        "x_1": 0.0,
+        "x_2": 1.0,
+        "power": 1.0,
+    }
+    params.update(kwargs)
+
+    with pytest.raises(ValueError, match=match):
+        interpolate_between_functions(**params)

@@ -1,6 +1,7 @@
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.backends.backend_qt import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
+import matplotlib as mpl
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QVBoxLayout,
@@ -14,6 +15,7 @@ from phase_weaver.app.plot_model import (
     TimePlotModel,
 )
 from phase_weaver.app.utils import nm_to_thz, thz_to_nm
+from phase_weaver.qt_theme import APP_THEME
 
 from phase_weaver.core import CurrentProfile, FormFactor, Profile
 
@@ -35,11 +37,11 @@ class MplCanvas(FigureCanvas):
 
 
 class PlotPanel(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, theme: APP_THEME = APP_THEME.DARK):
         super().__init__(parent)
+        self.theme = theme
 
         self.canvas = MplCanvas(self)
-        self.canvas.setStyleSheet("background: #1e1e1e;")
         self.toolbar = NavigationToolbar(self.canvas, self)
 
         self.plot_controls = PlotControlsBox()
@@ -53,14 +55,15 @@ class PlotPanel(QWidget):
         layout.addWidget(self.plot_controls)
         layout.addLayout(plot_col, 1)
 
-        self._create_artists()
-        self._style_axes()
-
-        self.canvas.ax_mag.set_xlim(0.0, 333.0)  # up to 333 THz (900 nm) by default
-
         self.time_model: TimePlotModel | None = None
         self.spectrum_model: SpectrumPlotModel | None = None
         self.measurement_lines = []
+
+        self._create_artists()
+        self._style_axes()
+        self.set_theme(theme)
+
+        self.canvas.ax_mag.set_xlim(0.0, 333.0)  # up to 333 THz (900 nm) by default
 
     def render_input(self, prof_input: Profile, formfactor_input: FormFactor):
         if self.time_model is None:
@@ -139,6 +142,12 @@ class PlotPanel(QWidget):
             self.measurement_lines.append(line)
 
         self.canvas.ax_mag.legend(loc="upper left", fontsize="small")
+        self._apply_theme_to_plot()
+        self.canvas.draw_idle()
+
+    def set_theme(self, theme: APP_THEME) -> None:
+        self.theme = theme
+        self._apply_theme_to_plot()
         self.canvas.draw_idle()
 
     def _render_time(self) -> None:
@@ -274,8 +283,13 @@ class PlotPanel(QWidget):
                 "Spectrum model is not initialized. Call render_input() first."
             )
 
-        x0 = float(model.f_min_ui)
-        x1 = float(model.f_max_ui)
+        x0_value = model.f_min_ui
+        x1_value = model.f_max_ui
+        if x0_value is None or x1_value is None:
+            x0, x1 = 0.0, 333.0
+        else:
+            x0 = float(x0_value)
+            x1 = float(x1_value)
 
         if not np.isfinite(x0) or not np.isfinite(x1):
             x0, x1 = 0.0, 333.0
@@ -417,3 +431,81 @@ class PlotPanel(QWidget):
         )
         self.ax_lambda.set_xlabel("λ (nm)")
         self.ax_lambda.set_xticks([1000, 1500, 2000, 3000, 10000])
+
+    def _apply_theme_to_plot(self) -> None:
+        colors = mpl.rcParams["axes.prop_cycle"].by_key().get("color", [])
+        if len(colors) < 4:
+            colors = ["C0", "C1", "C2", "C3"]
+
+        facecolor = mpl.rcParams["axes.facecolor"]
+        figure_facecolor = mpl.rcParams["figure.facecolor"]
+        text_color = mpl.rcParams["text.color"]
+        label_color = mpl.rcParams["axes.labelcolor"]
+        edge_color = mpl.rcParams["axes.edgecolor"]
+        grid_color = mpl.rcParams["grid.color"]
+
+        self.canvas.figure.set_facecolor(figure_facecolor)
+        self.canvas.setStyleSheet(f"background: {figure_facecolor};")
+
+        for ax in self.canvas.figure.axes:
+            ax.set_facecolor(facecolor)
+            ax.title.set_color(text_color)
+            ax.xaxis.label.set_color(label_color)
+            ax.yaxis.label.set_color(label_color)
+            ax.tick_params(axis="both", colors=mpl.rcParams["xtick.color"])
+            ax.grid(
+                mpl.rcParams["axes.grid"],
+                color=grid_color,
+                linestyle=mpl.rcParams["grid.linestyle"],
+                alpha=mpl.rcParams["grid.alpha"],
+            )
+            for spine in ax.spines.values():
+                spine.set_color(edge_color)
+            self._style_legend(ax.get_legend())
+
+        self.ax_lambda.xaxis.label.set_color(label_color)
+        self.ax_lambda.tick_params(axis="x", colors=mpl.rcParams["xtick.color"])
+        for spine in self.ax_lambda.spines.values():
+            spine.set_color(edge_color)
+
+        self.line_current.set_color(colors[0])
+        self.line_recon.set_color(colors[1])
+        self.line_mag.set_color(colors[0])
+        self.line_mag_recon.set_color(colors[2])
+        self.line_phase_in.set_color(colors[1])
+        self.line_phase_recon.set_color(colors[3])
+
+        self.line_fwhm_input.set_color(colors[0])
+        self.line_fwhm_input_caps.set_color(colors[0])
+        self.text_fwhm_input.set_color(colors[0])
+        self.line_fwhm_recon.set_color(colors[1])
+        self.line_fwhm_recon_caps.set_color(colors[1])
+        self.text_fwhm_recon.set_color(colors[1])
+
+        self.canvas.ax_mag.yaxis.label.set_color(colors[0])
+        self.canvas.ax_phase.yaxis.label.set_color(colors[1])
+        self.canvas.ax_mag.tick_params(axis="y", colors=colors[0])
+        self.canvas.ax_phase.tick_params(axis="y", colors=colors[1])
+
+        self._style_fwhm_box(self.text_fwhm_input)
+        self._style_fwhm_box(self.text_fwhm_recon)
+
+        for index, line in enumerate(self.measurement_lines):
+            line.set_color(colors[(index + 4) % len(colors)])
+
+    def _style_legend(self, legend) -> None:
+        if legend is None:
+            return
+
+        legend.get_frame().set_facecolor(mpl.rcParams["legend.facecolor"])
+        legend.get_frame().set_edgecolor(mpl.rcParams["legend.edgecolor"])
+        legend.get_frame().set_alpha(mpl.rcParams["legend.framealpha"])
+        for text in legend.get_texts():
+            text.set_color(mpl.rcParams["text.color"])
+
+    def _style_fwhm_box(self, text) -> None:
+        if self.theme == APP_THEME.LIGHT:
+            facecolor = (1.0, 1.0, 1.0, 0.72)
+        else:
+            facecolor = (0.0, 0.0, 0.0, 0.18)
+        text.set_bbox(dict(boxstyle="round,pad=0.2", fc=facecolor, ec="none"))

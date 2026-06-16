@@ -1,5 +1,7 @@
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -9,6 +11,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from phase_weaver.mpl_style import apply_mpl_style, sync_mpl_to_qt
+from phase_weaver.qt_theme import APP_THEME, set_app_theme
+
 from ..logic import AppLogic, ReconstructionSummary
 from ..utils import load_app_icon
 from .controls_panel import ControlsPanel
@@ -16,13 +21,14 @@ from .plot_panel import PlotPanel
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, theme: APP_THEME = APP_THEME.DARK):
         super().__init__()
         self.setWindowTitle("Phase Weaver")
         self.setWindowIcon(load_app_icon())
+        self.theme = theme
 
         self.logic = AppLogic()
-        self.plot_panel: PlotPanel = PlotPanel()
+        self.plot_panel: PlotPanel = PlotPanel(theme=theme)
 
         self.controls_panel = ControlsPanel()
 
@@ -56,8 +62,42 @@ class MainWindow(QMainWindow):
         self.redraw_timer.setSingleShot(True)
         self.redraw_timer.timeout.connect(self.redraw_input)
 
+        self._create_menus()
         self.redraw_input()
         self.update_summary(self.logic.reconstruction_summary)
+
+    def _create_menus(self) -> None:
+        view_menu = self.menuBar().addMenu("View")
+        theme_menu = view_menu.addMenu("Theme")
+        self.theme_action_group = QActionGroup(self)
+        self.theme_action_group.setExclusive(True)
+        self.theme_actions: dict[APP_THEME, QAction] = {}
+
+        for theme in APP_THEME:
+            action = QAction(theme.value, self)
+            action.setCheckable(True)
+            action.setChecked(theme == self.theme)
+            action.triggered.connect(
+                lambda _checked=False, selected=theme: self.set_theme(selected)
+            )
+            self.theme_action_group.addAction(action)
+            theme_menu.addAction(action)
+            self.theme_actions[theme] = action
+
+    def set_theme(self, theme: APP_THEME) -> None:
+        if theme == self.theme:
+            return
+
+        app = QApplication.instance()
+        if not isinstance(app, QApplication):
+            return
+
+        self.theme = theme
+        set_app_theme(app, theme)
+        apply_mpl_style(theme)
+        sync_mpl_to_qt(app, self.plot_panel.canvas.figure)
+        self.plot_panel.set_theme(theme)
+        self.theme_actions[theme].setChecked(True)
 
     def schedule_updates(self) -> None:
         self.redraw_timer.start(10)

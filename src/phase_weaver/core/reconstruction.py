@@ -31,6 +31,51 @@ from .measurement import MeasuredFormFactor
 from .utils import gaussian_extend, interpolate_between_functions
 
 
+@dataclass(slots=True)
+class ReconstructionHistory:
+    iterations: list[int]
+    measurement_error: list[float]
+    phase_delta_mse: list[float]
+    profile_delta_mse: list[float]
+
+    @classmethod
+    def empty(cls) -> ReconstructionHistory:
+        return cls(
+            iterations=[],
+            measurement_error=[],
+            phase_delta_mse=[],
+            profile_delta_mse=[],
+        )
+
+    def append(
+        self,
+        iteration: int,
+        measurement_error: float,
+        phase_delta_mse: float,
+        profile_delta_mse: float,
+    ) -> None:
+        self.iterations.append(iteration)
+        self.measurement_error.append(measurement_error)
+        self.phase_delta_mse.append(phase_delta_mse)
+        self.profile_delta_mse.append(profile_delta_mse)
+
+    def as_arrays(self) -> dict[str, np.ndarray]:
+        return {
+            "reconstruction_history_iteration": np.asarray(
+                self.iterations, dtype=int
+            ),
+            "reconstruction_history_measurement_error": np.asarray(
+                self.measurement_error, dtype=float
+            ),
+            "reconstruction_history_phase_delta_mse": np.asarray(
+                self.phase_delta_mse, dtype=float
+            ),
+            "reconstruction_history_profile_delta_mse": np.asarray(
+                self.profile_delta_mse, dtype=float
+            ),
+        }
+
+
 class PhaseInitState(Protocol):
     phase_init_mode: object
     time_constraints: set[object]
@@ -390,6 +435,7 @@ class GerchbergSaxton(ReconstructionAlgorithm):
         self.last_iterations = 0
         self.last_stop_reason = "not_run"
         self.last_measurement_error: float | None = None
+        self.history = ReconstructionHistory.empty()
 
         self.transform = DCPhysicalRFFT(
             unwrap_phase=True,
@@ -421,9 +467,12 @@ class GerchbergSaxton(ReconstructionAlgorithm):
         self.last_iterations = 0
         self.last_stop_reason = "not_run"
         self.last_measurement_error = None
+        self.history = ReconstructionHistory.empty()
 
         prof = ff.to_profile(transform=self.transform)
         self.time_constraints.apply(prof)
+        last_phase = ff.phase.copy()
+        last_profile = prof.values.copy()
 
         while not self.stop():
             # back to time domain
@@ -435,6 +484,16 @@ class GerchbergSaxton(ReconstructionAlgorithm):
 
             self.stop.update(prof=prof, ff=ff)
             self.last_iterations += 1
+            phase_delta_mse = float(np.mean((ff.phase - last_phase) ** 2))
+            profile_delta_mse = float(np.mean((prof.values - last_profile) ** 2))
+            self.history.append(
+                iteration=self.last_iterations,
+                measurement_error=self._measurement_error(ff),
+                phase_delta_mse=phase_delta_mse,
+                profile_delta_mse=profile_delta_mse,
+            )
+            last_phase = ff.phase.copy()
+            last_profile = prof.values.copy()
 
         self.last_stop_reason = self._describe_stop_reason()
         self.last_measurement_error = self._measurement_error(ff)

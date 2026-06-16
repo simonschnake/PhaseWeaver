@@ -5,11 +5,22 @@ import matplotlib as mpl
 
 from importlib import resources
 
-def apply_mpl_style() -> None:
+from phase_weaver.qt_theme import APP_THEME
+
+
+MPL_STYLE_FILES = {
+    APP_THEME.DARK: "vscode_dark.mplstyle",
+    APP_THEME.LIGHT: "vscode_light.mplstyle",
+}
+
+
+def apply_mpl_style(theme: APP_THEME = APP_THEME.DARK) -> None:
     """
     Apply the bundled matplotlib style sheet.
     """
-    style_ref = resources.files("phase_weaver").joinpath("stylelib/vscode_dark.mplstyle")
+    style_ref = resources.files("phase_weaver").joinpath(
+        f"stylelib/{MPL_STYLE_FILES[theme]}"
+    )
     with resources.as_file(style_ref) as style_path:
         mplstyle.use(str(style_path))
 
