@@ -5,7 +5,11 @@ from numpy.testing import assert_allclose
 from phase_weaver.app.config import PHASE_INIT_MODE
 from phase_weaver.app.logic import (
     AppLogic,
+    CRISP_FORMFACTOR_XY_KEY,
     ReconstructionSummary,
+    TIMESTAMP_KEY,
+    load_measurements_file,
+    load_measurements_h5,
     load_measurements_npz,
 )
 from phase_weaver.app.plot_model import SpectrumPlotModel, TimePlotModel
@@ -64,6 +68,50 @@ def test_load_measurements_npz_rejects_invalid_arrays(tmp_path):
 
     with pytest.raises(ValueError, match="finite"):
         load_measurements_npz(path)
+
+
+def test_load_measurements_h5_uses_latest_timestamped_crisp_row(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "measurement.h5"
+    with h5py.File(path, "w") as data:
+        data.create_dataset(TIMESTAMP_KEY, data=np.array([100.0, 300.0, 200.0]))
+        data.create_dataset(
+            CRISP_FORMFACTOR_XY_KEY,
+            data=np.array(
+                [
+                    [[0.1, 0.01], [0.2, 0.04]],
+                    [[0.3, 0.09], [0.4, 0.16]],
+                    [[0.5, 0.25], [0.6, 0.36]],
+                ],
+                dtype=np.float32,
+            ),
+        )
+
+    measurements = load_measurements_h5(path)
+
+    assert len(measurements) == 1
+    assert measurements[0].label == "CRISP latest 1970-01-01T00:05:00+00:00"
+    assert_allclose(measurements[0].measured.freq, [0.3e12, 0.4e12])
+    assert_allclose(measurements[0].measured.mag, [0.3, 0.4])
+
+
+def test_load_measurements_h5_rejects_missing_crisp_dataset(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "bad_measurement.h5"
+    with h5py.File(path, "w") as data:
+        data.create_dataset(TIMESTAMP_KEY, data=np.array([100.0]))
+
+    with pytest.raises(ValueError, match="CRISP dataset"):
+        load_measurements_h5(path)
+
+
+def test_load_measurements_file_dispatches_by_suffix(tmp_path):
+    path = tmp_path / "measurement.npz"
+    np.savez(path, freq_hz=np.array([1.0]), mag=np.array([0.5]))
+
+    measurements = load_measurements_file(path)
+
+    assert_allclose(measurements[0].measured.freq, [1.0])
 
 
 def test_app_logic_uses_loaded_measurements_over_simulated(tmp_path):

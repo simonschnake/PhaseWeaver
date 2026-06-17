@@ -156,7 +156,7 @@ def load_measurements_h5(path: str | Path) -> tuple[LoadedMeasurement, ...]:
             label=f"CRISP latest {measured_at}",
             measured=MeasuredFormFactor(
                 freq=shot[:, 0] * THZ_TO_HZ,
-                mag=shot[:, 1],
+                mag=np.sqrt(shot[:, 1]),
             ),
         ),
     )
