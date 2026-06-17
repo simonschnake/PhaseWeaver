@@ -8,6 +8,7 @@ from phase_weaver.app.logic import (
     CRISP_FORMFACTOR_XY_KEY,
     ReconstructionSummary,
     TIMESTAMP_KEY,
+    list_h5_measurement_shots,
     load_measurements_file,
     load_measurements_h5,
     load_measurements_npz,
@@ -93,6 +94,63 @@ def test_load_measurements_h5_uses_latest_timestamped_crisp_row(tmp_path):
     assert measurements[0].label == "CRISP latest 1970-01-01T00:05:00+00:00"
     assert_allclose(measurements[0].measured.freq, [0.3e12, 0.4e12])
     assert_allclose(measurements[0].measured.mag, [0.3, 0.4])
+
+
+def test_list_h5_measurement_shots_returns_available_timestamps(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "measurement.h5"
+    with h5py.File(path, "w") as data:
+        data.create_dataset(TIMESTAMP_KEY, data=np.array([100.0, 300.0]))
+        data.create_dataset(
+            CRISP_FORMFACTOR_XY_KEY,
+            data=np.zeros((2, 2, 2), dtype=np.float32),
+        )
+
+    shots = list_h5_measurement_shots(path)
+
+    assert [shot.index for shot in shots] == [0, 1]
+    assert [shot.measured_at for shot in shots] == [
+        "1970-01-01T00:01:40+00:00",
+        "1970-01-01T00:05:00+00:00",
+    ]
+
+
+def test_load_measurements_h5_uses_selected_timestamped_crisp_row(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "measurement.h5"
+    with h5py.File(path, "w") as data:
+        data.create_dataset(TIMESTAMP_KEY, data=np.array([100.0, 300.0, 200.0]))
+        data.create_dataset(
+            CRISP_FORMFACTOR_XY_KEY,
+            data=np.array(
+                [
+                    [[0.1, 0.01], [0.2, 0.04]],
+                    [[0.3, 0.09], [0.4, 0.16]],
+                    [[0.5, 0.25], [0.6, 0.36]],
+                ],
+                dtype=np.float32,
+            ),
+        )
+
+    measurements = load_measurements_h5(path, shot_index=2)
+
+    assert measurements[0].label == "CRISP 1970-01-01T00:03:20+00:00"
+    assert_allclose(measurements[0].measured.freq, [0.5e12, 0.6e12])
+    assert_allclose(measurements[0].measured.mag, [0.5, 0.6])
+
+
+def test_load_measurements_h5_rejects_invalid_shot_index(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "measurement.h5"
+    with h5py.File(path, "w") as data:
+        data.create_dataset(TIMESTAMP_KEY, data=np.array([100.0]))
+        data.create_dataset(
+            CRISP_FORMFACTOR_XY_KEY,
+            data=np.zeros((1, 2, 2), dtype=np.float32),
+        )
+
+    with pytest.raises(ValueError, match="shot index"):
+        load_measurements_h5(path, shot_index=3)
 
 
 def test_load_measurements_h5_rejects_missing_crisp_dataset(tmp_path):

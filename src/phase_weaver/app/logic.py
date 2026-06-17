@@ -42,6 +42,13 @@ class LoadedMeasurement:
     measured: MeasuredFormFactor
 
 
+@dataclass(frozen=True, slots=True)
+class H5MeasurementShot:
+    index: int
+    timestamp: float
+    measured_at: str
+
+
 @dataclass(slots=True)
 class ReconstructionSummary:
     measurement_source: str = "simulated"
@@ -118,7 +125,28 @@ def load_measurements_npz(path: str | Path) -> tuple[LoadedMeasurement, ...]:
     return tuple(measurements)
 
 
-def load_measurements_h5(path: str | Path) -> tuple[LoadedMeasurement, ...]:
+def _validate_h5_measurement_data(
+    xy: h5py.Dataset, timestamps: np.ndarray
+) -> None:
+    if xy.ndim != 3 or xy.shape[2] != 2:
+        raise ValueError(
+            f"CRISP dataset must have shape (shots, points, 2), got {xy.shape}"
+        )
+    if timestamps.ndim != 1:
+        raise ValueError("timestamp must be a 1D array")
+    if xy.shape[0] != len(timestamps):
+        raise ValueError("CRISP dataset shot count must match timestamp array length")
+    if len(timestamps) == 0:
+        raise ValueError("measurement h5 must contain at least one timestamp")
+    if np.any(~np.isfinite(timestamps)):
+        raise ValueError("timestamp must contain only finite values")
+
+
+def _format_timestamp(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+
+
+def list_h5_measurement_shots(path: str | Path) -> tuple[H5MeasurementShot, ...]:
     path = Path(path)
     with h5py.File(path, "r") as data:
         if CRISP_FORMFACTOR_XY_KEY not in data:
@@ -130,30 +158,47 @@ def load_measurements_h5(path: str | Path) -> tuple[LoadedMeasurement, ...]:
 
         xy = data[CRISP_FORMFACTOR_XY_KEY]
         timestamps = np.asarray(data[TIMESTAMP_KEY], dtype=float)
+        _validate_h5_measurement_data(xy, timestamps)
 
-        if xy.ndim != 3 or xy.shape[2] != 2:
+    return tuple(
+        H5MeasurementShot(
+            index=index,
+            timestamp=float(timestamp),
+            measured_at=_format_timestamp(float(timestamp)),
+        )
+        for index, timestamp in enumerate(timestamps)
+    )
+
+
+def load_measurements_h5(
+    path: str | Path, shot_index: int | None = None
+) -> tuple[LoadedMeasurement, ...]:
+    path = Path(path)
+    with h5py.File(path, "r") as data:
+        if CRISP_FORMFACTOR_XY_KEY not in data:
             raise ValueError(
-                f"CRISP dataset must have shape (shots, points, 2), got {xy.shape}"
+                f"measurement h5 must contain CRISP dataset {CRISP_FORMFACTOR_XY_KEY!r}"
             )
-        if timestamps.ndim != 1:
-            raise ValueError("timestamp must be a 1D array")
-        if xy.shape[0] != len(timestamps):
+        if TIMESTAMP_KEY not in data:
+            raise ValueError(f"measurement h5 must contain {TIMESTAMP_KEY!r}")
+
+        xy = data[CRISP_FORMFACTOR_XY_KEY]
+        timestamps = np.asarray(data[TIMESTAMP_KEY], dtype=float)
+        _validate_h5_measurement_data(xy, timestamps)
+
+        selected_index = int(np.argmax(timestamps)) if shot_index is None else shot_index
+        if selected_index < 0 or selected_index >= len(timestamps):
             raise ValueError(
-                "CRISP dataset shot count must match timestamp array length"
+                f"shot index must be between 0 and {len(timestamps) - 1}, got {shot_index}"
             )
-        if len(timestamps) == 0:
-            raise ValueError("measurement h5 must contain at least one timestamp")
-        if np.any(~np.isfinite(timestamps)):
-            raise ValueError("timestamp must contain only finite values")
+        shot = np.asarray(xy[selected_index], dtype=float)
+        timestamp = float(timestamps[selected_index])
 
-        shot_index = int(np.argmax(timestamps))
-        shot = np.asarray(xy[shot_index], dtype=float)
-        timestamp = float(timestamps[shot_index])
-
-    measured_at = datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+    measured_at = _format_timestamp(timestamp)
+    label = f"CRISP latest {measured_at}" if shot_index is None else f"CRISP {measured_at}"
     return (
         LoadedMeasurement(
-            label=f"CRISP latest {measured_at}",
+            label=label,
             measured=MeasuredFormFactor(
                 freq=shot[:, 0] * THZ_TO_HZ,
                 mag=np.sqrt(shot[:, 1]),
@@ -162,13 +207,15 @@ def load_measurements_h5(path: str | Path) -> tuple[LoadedMeasurement, ...]:
     )
 
 
-def load_measurements_file(path: str | Path) -> tuple[LoadedMeasurement, ...]:
+def load_measurements_file(
+    path: str | Path, h5_shot_index: int | None = None
+) -> tuple[LoadedMeasurement, ...]:
     path = Path(path)
     suffix = path.suffix.lower()
     if suffix == ".npz":
         return load_measurements_npz(path)
     if suffix in {".h5", ".hdf5"}:
-        return load_measurements_h5(path)
+        return load_measurements_h5(path, shot_index=h5_shot_index)
     raise ValueError("measurement file must be a .npz, .h5, or .hdf5 file")
 
 
@@ -179,8 +226,12 @@ class AppLogic:
         self.loaded_measurements: tuple[LoadedMeasurement, ...] = ()
         self.reconstruction_summary = ReconstructionSummary()
 
-    def load_measurements(self, path: str | Path) -> tuple[LoadedMeasurement, ...]:
-        self.loaded_measurements = load_measurements_file(path)
+    def load_measurements(
+        self, path: str | Path, h5_shot_index: int | None = None
+    ) -> tuple[LoadedMeasurement, ...]:
+        self.loaded_measurements = load_measurements_file(
+            path, h5_shot_index=h5_shot_index
+        )
         self.phase_last = None
         self.reconstruction_summary = ReconstructionSummary(
             measurement_source="loaded",

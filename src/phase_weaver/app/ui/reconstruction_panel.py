@@ -1,3 +1,5 @@
+from typing import cast
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
 
@@ -86,13 +88,30 @@ class ReconstructionPanel(QWidget):
 
         return ReconstructionState(
             # mag_init_mode=self.mag_init_box.mode,
-            phase_init_mode=self.phase_init_box.mode,
-            time_constraints=set(self.time_constraint_box.selected_modes),
-            frequency_constraints=set(self.frequency_constraint_box.selected_modes),
-            stop_conditions=set(self.stop_condition_box.selected_modes),
+            phase_init_mode=cast(cfg.PHASE_INIT_MODE, self.phase_init_box.mode),
+            time_constraints=cast(
+                set[cfg.RECON_TIME_CONSTRAINT],
+                set(self.time_constraint_box.selected_modes),
+            ),
+            frequency_constraints=cast(
+                set[cfg.RECON_FREQUENCY_CONSTRAINT],
+                set(self.frequency_constraint_box.selected_modes),
+            ),
+            stop_conditions=cast(
+                set[cfg.RECON_STOP_CONDITION],
+                set(self.stop_condition_box.selected_modes),
+            ),
             # band_limit=band_limit_enabled,
             # band_limit_f_cut_hz=f_cut_hz,
         )
+
+    def set_reconstruction_state(self, state: ReconstructionState) -> None:
+        self.phase_init_box.mode = state.phase_init_mode
+        self.time_constraint_box.selected_modes = set(state.time_constraints)
+        self.frequency_constraint_box.selected_modes = set(
+            state.frequency_constraints
+        )
+        self.stop_condition_box.selected_modes = set(state.stop_conditions)
 
     def get_measurement_state(self) -> MeasurementState:
         meas_state = MeasurementState()
@@ -104,8 +123,19 @@ class ReconstructionPanel(QWidget):
 
         return meas_state
 
+    def set_measurement_state(self, state: MeasurementState) -> None:
+        modes = set()
+        if state.crisp:
+            modes.add(cfg.MEASUREMENT_MODE.CRISP)
+        if state.infrared:
+            modes.add(cfg.MEASUREMENT_MODE.INFRARED)
+        self.measurement_box.selected_modes = modes
+
     def is_auto_reconstruction_enabled(self) -> bool:
         return self.auto_reconstruct_button.isChecked()
+
+    def set_auto_reconstruction_enabled(self, enabled: bool) -> None:
+        self.auto_reconstruct_button.setChecked(enabled)
 
     def _update_auto_button_text(self, enabled: bool) -> None:
         self.auto_reconstruct_button.setText(

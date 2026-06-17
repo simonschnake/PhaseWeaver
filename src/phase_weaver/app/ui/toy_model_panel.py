@@ -49,3 +49,9 @@ class ToyModelPanel(QWidget):
             peak2_enabled=self.spike2_box.is_enabled_component(),
             peak2=self.spike2_box.get_params(),
         )
+
+    def set_scenario_state(self, state: ProfileModelState) -> None:
+        self.background_box.set_params(state.background)
+        self.spike_box.set_params(state.peak)
+        self.spike2_box.set_enabled_component(state.peak2_enabled)
+        self.spike2_box.set_params(state.peak2)
