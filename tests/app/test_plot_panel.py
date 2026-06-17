@@ -49,23 +49,48 @@ def test_plot_panel_render_methods_run():
     assert panel.time_model is not None
     assert panel.spectrum_model is not None
     assert len(panel.measurement_lines) == 1
+    measurement_x, measurement_y = panel.measurement_lines[0].getOriginalDataset()
+    np.testing.assert_allclose(measurement_x, [10e12, 20e12])
+    np.testing.assert_allclose(measurement_y, [0.9, 0.7])
 
 
-def test_spectrum_magnitude_is_log_transformed_but_phase_is_linear():
+def test_plot_panel_uses_si_units_as_plot_data():
     _app()
     panel = PlotPanel()
     profile, formfactor = _plot_inputs()
 
     panel.render_input(profile, formfactor)
 
-    mag_x, mag_y = panel.line_mag.getData()
+    time_x, current_y = panel.line_current.getOriginalDataset()
+    mag_x, _mag_y = panel.line_mag.getOriginalDataset()
+    phase_x, _phase_y = panel.line_phase_in.getData()
+
+    np.testing.assert_allclose(time_x, panel.time_model.t_plot_s)
+    np.testing.assert_allclose(current_y, panel.time_model.current_input_plot_A)
+    np.testing.assert_allclose(mag_x, panel.spectrum_model.f_plot_Hz)
+    np.testing.assert_allclose(phase_x, panel.spectrum_model.f_plot_Hz)
+
+
+def test_spectrum_magnitude_uses_pyqtgraph_log_axis_and_phase_is_linear():
+    _app()
+    panel = PlotPanel()
+    profile, formfactor = _plot_inputs()
+
+    panel.render_input(profile, formfactor)
+
+    mag_x, mag_y = panel.line_mag.getOriginalDataset()
+    _display_mag_x, display_mag_y = panel.line_mag.getData()
     phase_x, phase_y = panel.line_phase_in.getData()
 
     assert np.asarray(mag_x).shape == np.asarray(phase_x).shape
+    np.testing.assert_allclose(mag_x, panel.spectrum_model.f_plot_Hz)
+    assert panel.canvas.spectrum_plot.getPlotItem().ctrl.logYCheck.isChecked()
+    expected_mag = np.clip(panel.spectrum_model.mag_input_ui, 1e-12, None)
     np.testing.assert_allclose(
         mag_y,
-        np.log10(np.clip(panel.spectrum_model.mag_input_ui, 1e-12, None)),
+        expected_mag,
     )
+    np.testing.assert_allclose(display_mag_y, np.log10(expected_mag))
     np.testing.assert_allclose(phase_y, panel.spectrum_model.phase_input_ui)
 
 

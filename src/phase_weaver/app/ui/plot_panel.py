@@ -12,7 +12,7 @@ from phase_weaver.app.config import PLOT_LINE_MODE
 from phase_weaver.app.logic import LoadedMeasurement
 from phase_weaver.app.plot_model import SpectrumPlotModel, TimePlotModel
 from phase_weaver.app.plot_theme import COLORBLIND_FRIENDLY_CYCLE, PLOT_THEMES
-from phase_weaver.app.utils import thz_to_nm
+from phase_weaver.app.utils import hz_to_m
 from phase_weaver.core import CurrentProfile, FormFactor, Profile
 from phase_weaver.qt_theme import APP_THEME
 
@@ -97,25 +97,11 @@ class LambdaAxis(pg.AxisItem):
     def tickStrings(self, values, scale, spacing):  # noqa: N802
         labels = []
         for value in values:
-            wavelength = thz_to_nm(float(value))
+            wavelength = hz_to_m(float(value))
             if np.isfinite(wavelength) and wavelength > 0:
-                labels.append(f"{wavelength:.0f}")
+                labels.append(pg.siFormat(wavelength, suffix="m", precision=3))
             else:
                 labels.append("")
-        return labels
-
-
-class LogMagnitudeAxis(pg.AxisItem):
-    def tickStrings(self, values, scale, spacing):  # noqa: N802
-        labels = []
-        for value in values:
-            magnitude = 10 ** float(value)
-            if not np.isfinite(magnitude):
-                labels.append("")
-            elif magnitude >= 1e-2:
-                labels.append(f"{magnitude:g}")
-            else:
-                labels.append(f"{magnitude:.0e}")
         return labels
 
 
@@ -124,9 +110,7 @@ class PlotCanvas(QWidget):
         super().__init__(parent)
 
         self.time_plot = pg.PlotWidget()
-        self.spectrum_plot = pg.PlotWidget(
-            axisItems={"left": LogMagnitudeAxis("left"), "top": LambdaAxis("top")}
-        )
+        self.spectrum_plot = pg.PlotWidget(axisItems={"top": LambdaAxis("top")})
         self.phase_view = pg.ViewBox()
         self.time_legend = LegendStrip()
         self.spectrum_legend = LegendStrip()
@@ -153,18 +137,19 @@ class PlotCanvas(QWidget):
         self._configure_axes()
 
     def _configure_axes(self) -> None:
-        self.time_plot.setLabel("bottom", "t", units="fs")
-        self.time_plot.setLabel("left", "Current", units="kA")
+        self.time_plot.setLabel("bottom", "t", units="s")
+        self.time_plot.setLabel("left", "Current", units="A")
         self.time_plot.showGrid(x=False, y=False)
 
         plot_item = self.spectrum_plot.getPlotItem()
-        plot_item.setLabel("bottom", "f", units="THz")
+        plot_item.setLabel("bottom", "f", units="Hz")
         plot_item.setLabel("left", "|F(f)|")
         plot_item.setLabel("right", "phase", units="rad")
-        plot_item.setLabel("top", "lambda", units="nm")
+        plot_item.setLabel("top", "lambda")
         plot_item.showAxis("top")
         plot_item.showAxis("right")
         plot_item.showGrid(x=False, y=False)
+        plot_item.setLogMode(y=True)
 
         plot_item.scene().addItem(self.phase_view)
         plot_item.getAxis("right").linkToView(self.phase_view)
@@ -198,7 +183,7 @@ class PlotPanel(QWidget):
         self._create_artists()
         self._style_axes()
         self.set_theme(theme)
-        self.canvas.spectrum_plot.setXRange(0.0, 333.0, padding=0.0)
+        self.canvas.spectrum_plot.setXRange(0.0, 333e12, padding=0.0)
 
     def render_input(self, prof_input: Profile, formfactor_input: FormFactor):
         if self.time_model is None:
@@ -269,8 +254,8 @@ class PlotPanel(QWidget):
         for index, item in enumerate(measurements):
             color = colors[(index + 4) % len(colors)]
             line = self.canvas.spectrum_plot.plot(
-                item.measured.freq * 1e-12,
-                self._log_mag(item.measured.mag),
+                item.measured.freq,
+                self._magnitude_for_log_axis(item.measured.mag),
                 pen=None,
                 symbol="o",
                 symbolSize=4,
@@ -299,11 +284,11 @@ class PlotPanel(QWidget):
             )
 
         self.line_current.setData(
-            self.time_model.t_ui, self.time_model.current_input_ui
+            self.time_model.t_plot_s, self.time_model.current_input_plot_A
         )
-        recon_y = self.time_model.current_recon_ui
+        recon_y = self.time_model.current_recon_plot_A
         if recon_y is not None:
-            self.line_recon.setData(self.time_model.t_ui, recon_y)
+            self.line_recon.setData(self.time_model.t_plot_s, recon_y)
         else:
             self.line_recon.setData([], [])
 
@@ -313,12 +298,16 @@ class PlotPanel(QWidget):
                 "Spectrum model is not initialized. Call render_input() first."
             )
 
-        f_ui = self.spectrum_model.f_ui
-        self.line_mag.setData(f_ui, self._log_mag(self.spectrum_model.mag_input_ui))
+        f_ui = self.spectrum_model.f_plot_Hz
+        self.line_mag.setData(
+            f_ui, self._magnitude_for_log_axis(self.spectrum_model.mag_input_ui)
+        )
 
         mag_recon = self.spectrum_model.mag_recon_ui
         if mag_recon is not None:
-            self.line_mag_recon.setData(f_ui, self._log_mag(mag_recon))
+            self.line_mag_recon.setData(
+                f_ui, self._magnitude_for_log_axis(mag_recon)
+            )
         else:
             self.line_mag_recon.setData([], [])
 
@@ -342,7 +331,7 @@ class PlotPanel(QWidget):
         show_recon_times = PLOT_LINE_MODE.CURRENT_RECON in visible_lines
 
         self._set_fwhm_items(
-            self.time_model.current_input_fwhm,
+            self.time_model.current_input_fwhm_plot,
             self.line_fwhm_input,
             self.line_fwhm_input_caps,
             self.text_fwhm_input,
@@ -350,7 +339,7 @@ class PlotPanel(QWidget):
             show_fwhm and show_input_times,
         )
         self._set_fwhm_items(
-            self.time_model.current_recon_fwhm,
+            self.time_model.current_recon_fwhm_plot,
             self.line_fwhm_recon,
             self.line_fwhm_recon_caps,
             self.text_fwhm_recon,
@@ -379,7 +368,9 @@ class PlotPanel(QWidget):
             raise ValueError(
                 "Time model is not initialized. Call render_input() first."
             )
-        self.canvas.time_plot.setXRange(model.t_min_ui, model.t_max_ui, padding=0.0)
+        self.canvas.time_plot.setXRange(
+            model.t_min_plot_s, model.t_max_plot_s, padding=0.0
+        )
         self.canvas.time_plot.enableAutoRange(axis="y")
 
     def _apply_spectrum_axes(self) -> None:
@@ -402,7 +393,7 @@ class PlotPanel(QWidget):
         self.line_recon.setVisible(
             PLOT_LINE_MODE.CURRENT_RECON in visible
             and self.time_model is not None
-            and self.time_model.current_recon_ui is not None
+            and self.time_model.current_recon_plot_A is not None
         )
         self.line_mag.setVisible(PLOT_LINE_MODE.MAG_INPUT in visible)
         self.line_mag_recon.setVisible(
@@ -508,7 +499,7 @@ class PlotPanel(QWidget):
         if (
             PLOT_LINE_MODE.CURRENT_RECON in visible
             and self.time_model is not None
-            and self.time_model.current_recon_ui is not None
+            and self.time_model.current_recon_plot_A is not None
         ):
             time_items.append(("reconstructed", colors[1], Qt.PenStyle.DashLine, False))
         self.canvas.time_legend.set_items(
@@ -580,7 +571,7 @@ class PlotPanel(QWidget):
             [x0, x0, np.nan, x1, x1],
             [y - cap_height, y + cap_height, np.nan, y - cap_height, y + cap_height],
         )
-        text.setText(f"{label}: {fwhm.fwhm:.2f} fs")
+        text.setText(f"{label}: {pg.siFormat(fwhm.fwhm, suffix='s', precision=3)}")
         line.setVisible(visible)
         caps.setVisible(visible)
         text.setVisible(visible)
@@ -600,23 +591,23 @@ class PlotPanel(QWidget):
         self.text_fwhm_recon.setPos(x, y1 - (y1 - y0) * 0.11)
 
     def _spectrum_x_range(self, model: SpectrumPlotModel) -> tuple[float, float]:
-        x0_value = model.f_min_ui
-        x1_value = model.f_max_ui
+        x0_value = model.f_min_plot_Hz
+        x1_value = model.f_max_plot_Hz
         if x0_value is None or x1_value is None:
-            x0, x1 = 0.0, 333.0
+            x0, x1 = 0.0, 333e12
         else:
             x0 = float(x0_value)
             x1 = float(x1_value)
 
         if not np.isfinite(x0) or not np.isfinite(x1):
-            return 0.0, 333.0
+            return 0.0, 333e12
         if x0 == x1:
             pad = max(abs(x0) * 0.05, 1.0)
             return x0 - pad, x1 + pad
         return x0, x1
 
-    def _log_mag(self, values: np.ndarray) -> np.ndarray:
+    def _magnitude_for_log_axis(self, values: np.ndarray) -> np.ndarray:
         values = np.asarray(values, dtype=float)
         finite = np.isfinite(values)
         clipped = np.clip(values, MIN_LOG_MAG, None)
-        return np.where(finite, np.log10(clipped), np.nan)
+        return np.where(finite, clipped, np.nan)

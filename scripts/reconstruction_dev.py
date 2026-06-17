@@ -66,36 +66,44 @@ def main() -> int:
     win.resize(1100, 450)
 
     time_plot = win.addPlot(row=0, col=0)
-    time_plot.setLabel("left", "Current", units="kA")
-    time_plot.setLabel("bottom", "t", units="fs")
+    time_plot.setLabel("left", "Current", units="A")
+    time_plot.setLabel("bottom", "t", units="s")
     time_plot.addLegend()
-    time_plot.plot(time_model.t_ui, time_model.current_input_ui, pen="b", name="Input")
-    if time_model.current_recon_ui is not None:
+    time_plot.plot(
+        time_model.t_plot_s,
+        time_model.current_input_plot_A,
+        pen="b",
+        name="Input",
+    )
+    if time_model.current_recon_plot_A is not None:
         time_plot.plot(
-            time_model.t_ui,
-            time_model.current_recon_ui,
+            time_model.t_plot_s,
+            time_model.current_recon_plot_A,
             pen=pg.mkPen("r", style=Qt.DashLine),
             name="Recon",
         )
 
     spec_plot = win.addPlot(row=0, col=1)
-    spec_plot.setLabel("left", "log10 |F|")
-    spec_plot.setLabel("bottom", "f", units="THz")
+    spec_plot.setLabel("left", "|F|")
+    spec_plot.setLabel("bottom", "f", units="Hz")
+    spec_plot.setLogMode(y=True)
     spec_plot.addLegend()
     spec_plot.plot(
-        spec_model.f_ui,
-        np.log10(np.clip(spec_model.mag_input_ui, 1e-12, None)),
+        spec_model.f_plot_Hz,
+        np.clip(spec_model.mag_input_ui, 1e-12, None),
         pen="b",
         name="Mag Input",
     )
     if spec_model.mag_recon_ui is not None:
         spec_plot.plot(
-            spec_model.f_ui,
-            np.log10(np.clip(spec_model.mag_recon_ui, 1e-12, None)),
+            spec_model.f_plot_Hz,
+            np.clip(spec_model.mag_recon_ui, 1e-12, None),
             pen=pg.mkPen("r", style=Qt.DashLine),
             name="Mag Recon",
         )
-    spec_plot.setXRange(spec_model.f_min_ui, spec_model.f_max_ui, padding=0.0)
+    spec_plot.setXRange(
+        spec_model.f_min_plot_Hz, spec_model.f_max_plot_Hz, padding=0.0
+    )
 
     return app.exec()
 

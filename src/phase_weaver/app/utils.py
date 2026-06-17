@@ -17,6 +17,16 @@ def thz_to_nm(f_thz):
     return C_NM_THz / f
 
 
+def hz_to_m(f_hz):
+    import numpy as np
+
+    C_M_HZ = 299792458.0
+    F_EPS_HZ = np.finfo(float).eps
+    f = np.asarray(f_hz, dtype=float)
+    f = np.maximum(f, F_EPS_HZ)
+    return C_M_HZ / f
+
+
 def nm_to_thz(l_nm):
     import numpy as np
 
