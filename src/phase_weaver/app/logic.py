@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
+import h5py
 import numpy as np
 
 from phase_weaver.app.config import (
@@ -26,6 +28,12 @@ from phase_weaver.core.reconstruction import (
 
 from .plot_model import SpectrumPlotModel, TimePlotModel
 from .state import ControlsState, MeasurementState, ProfileModel, ReconstructionState
+
+CRISP_FORMFACTOR_XY_KEY = (
+    "XFEL.SDIAG__THZ_SPECTROMETER.FORMFACTOR__CRD.1934.TL__FORMFACTOR.XY"
+)
+TIMESTAMP_KEY = "timestamp"
+THZ_TO_HZ = 1e12
 
 
 @dataclass(slots=True)
@@ -110,6 +118,60 @@ def load_measurements_npz(path: str | Path) -> tuple[LoadedMeasurement, ...]:
     return tuple(measurements)
 
 
+def load_measurements_h5(path: str | Path) -> tuple[LoadedMeasurement, ...]:
+    path = Path(path)
+    with h5py.File(path, "r") as data:
+        if CRISP_FORMFACTOR_XY_KEY not in data:
+            raise ValueError(
+                f"measurement h5 must contain CRISP dataset {CRISP_FORMFACTOR_XY_KEY!r}"
+            )
+        if TIMESTAMP_KEY not in data:
+            raise ValueError(f"measurement h5 must contain {TIMESTAMP_KEY!r}")
+
+        xy = data[CRISP_FORMFACTOR_XY_KEY]
+        timestamps = np.asarray(data[TIMESTAMP_KEY], dtype=float)
+
+        if xy.ndim != 3 or xy.shape[2] != 2:
+            raise ValueError(
+                f"CRISP dataset must have shape (shots, points, 2), got {xy.shape}"
+            )
+        if timestamps.ndim != 1:
+            raise ValueError("timestamp must be a 1D array")
+        if xy.shape[0] != len(timestamps):
+            raise ValueError(
+                "CRISP dataset shot count must match timestamp array length"
+            )
+        if len(timestamps) == 0:
+            raise ValueError("measurement h5 must contain at least one timestamp")
+        if np.any(~np.isfinite(timestamps)):
+            raise ValueError("timestamp must contain only finite values")
+
+        shot_index = int(np.argmax(timestamps))
+        shot = np.asarray(xy[shot_index], dtype=float)
+        timestamp = float(timestamps[shot_index])
+
+    measured_at = datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+    return (
+        LoadedMeasurement(
+            label=f"CRISP latest {measured_at}",
+            measured=MeasuredFormFactor(
+                freq=shot[:, 0] * THZ_TO_HZ,
+                mag=shot[:, 1],
+            ),
+        ),
+    )
+
+
+def load_measurements_file(path: str | Path) -> tuple[LoadedMeasurement, ...]:
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix == ".npz":
+        return load_measurements_npz(path)
+    if suffix in {".h5", ".hdf5"}:
+        return load_measurements_h5(path)
+    raise ValueError("measurement file must be a .npz, .h5, or .hdf5 file")
+
+
 class AppLogic:
     def __init__(self):
         self.phase_last: np.ndarray | None = None
@@ -118,7 +180,7 @@ class AppLogic:
         self.reconstruction_summary = ReconstructionSummary()
 
     def load_measurements(self, path: str | Path) -> tuple[LoadedMeasurement, ...]:
-        self.loaded_measurements = load_measurements_npz(path)
+        self.loaded_measurements = load_measurements_file(path)
         self.phase_last = None
         self.reconstruction_summary = ReconstructionSummary(
             measurement_source="loaded",

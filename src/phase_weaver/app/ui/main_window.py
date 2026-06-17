@@ -275,7 +275,7 @@ class MainWindow(QMainWindow):
             self,
             "Load measurement bundle",
             "",
-            "NumPy measurement bundle (*.npz)",
+            "Measurement files (*.npz *.h5 *.hdf5);;NumPy measurement bundle (*.npz);;HDF5 recording (*.h5 *.hdf5)",
         )
         if not path:
             return

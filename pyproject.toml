@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
   "PySide6>=6.6",
   "basedpyright>=1.38.2",
+  "h5py>=3.16.0",
   "numpy>=1.26",
   "pyqtgraph>=0.13.7",
   "pytest>=9.0.2",
