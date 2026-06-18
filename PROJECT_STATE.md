@@ -1,177 +1,159 @@
 # PhaseWeaver Project State
 
-Last updated: 2026-06-16
+Last updated: 2026-06-18
 
 ## Executive Summary
 
-PhaseWeaver is currently a small Python/PySide6 scientific workbench for exploring current-profile reconstruction from form-factor magnitude data. The app can generate a configurable time-domain current profile, compute its spectrum magnitude and phase, simulate partial measurements, load `.npz` measurement bundles, and run a Gerchberg-Saxton-style magnitude-only reconstruction.
+PhaseWeaver is now moving from a generic magnitude-only reconstruction toy
+workbench toward a CRISP-aware current-profile reconstruction tool. The PySide6
+app still supports the original toy-model workflow, `.npz` measurement bundles,
+and Gerchberg-Saxton reconstruction, but the current implementation also has a
+first CRISP path:
 
-The project is functional enough that the full pytest suite passes and the Qt main window can be constructed in an offscreen smoke test. The last-phase reconstruction bug has been fixed, the first experiment-use workflow is in place, and the plots now render correctly on initial load instead of only after running reconstruction once. Recent work also added theme switching, reconstruction history capture, a colorblind-friendly plot palette, layout/DPI polish, and a cleaner main-window structure.
+- CRISP `.h5`/`.hdf5` measurement import from the XFEL HDF5 keys used by the
+  available recording.
+- Latest-shot selection by timestamp, with explicit shot-index support in the
+  loader.
+- Conversion of CRISP form-factor-squared values to `MeasuredFormFactor`
+  magnitudes for plotting and generic reconstruction.
+- Preservation of the original CRISP `|F|^2` values, shot index, timestamp, and
+  charge for CRISP-style reconstruction.
+- A `CRISP` reconstruction algorithm option beside `Gerchberg-Saxton`.
+- A Python implementation of the upstream CRISP reconstruction flow, including
+  input filtering, low/high-frequency Gaussian extrapolation, Savitzky-Golay
+  smoothing, Kramers-Kronig phase, positive-peak isolation, modulus-band
+  iteration, current scaling, and diagnostics.
+- Export of CRISP diagnostics alongside the ordinary plot arrays and
+  reconstruction summary.
 
-The app now has a clearer reconstruction-workbench shape: a large two-plot main view for time-domain current/profile and frequency-domain form factor, `File` menu actions for loading/exporting data, and external View-menu windows for Toy Model and Reconstruction Setup. The next work should continue this direction by cleaning stale code left behind by the UI refactor and tightening metadata/export behavior.
+The new docs capture the physics/software sources behind this direction:
 
-## Product Goal And Workflow Direction
+- `docs/formfactor_calculation.md`: how the CRISP form-factor service creates
+  calibrated `|F|^2` from detector channels, response, and charge.
+- `docs/crisp_reconstruction_algorithm.md`: how the upstream CRISP
+  reconstruction server turns `|F|^2` into a current profile.
+- `docs/ocean_insight_server.md`: what the Ocean Insight/NIRQuest server
+  publishes: wavelength-calibrated intensity spectra, not form factors.
+- `docs/ocean_relative_formfactor_path.md`: how Ocean/NIR spectra can be used
+  honestly as a relative high-frequency shape constraint until an absolute
+  response calibration exists.
 
-The target workflow is:
+## Where We Are Heading
 
-1. Establish source data.
-   - Use the current toy model to generate a simulated current profile for now.
-   - Later, also load simulated current profiles from files, including Ocelot-style simulation output once the concrete file structure has been inspected.
-   - Exact simulation-file schemas are intentionally deferred until real example files are available.
+The near-term target is a trustworthy reconstruction workbench for comparing
+toy/generated profiles, CRISP measurements, Ocean/NIR spectra, and reconstructed
+current profiles without hiding which data are calibrated and which are only
+relative.
 
-2. Derive or load measurements.
-   - From a toy-model or loaded current profile, derive synthetic CRISP and infrared spectrometer measurement data.
-   - Independently load real measurement bundles that contain CRISP and infrared spectrometer data.
-   - Measurement loading and profile loading must remain independent; loaded measurements do not necessarily need to correspond to the currently generated or loaded profile.
+The intended data interpretation is:
 
-3. Compare visually first.
-   - The near-term comparison should be primarily visual: overlay or otherwise compare generated/simulated measurements with loaded measurements.
-   - Residuals, numerical metrics, and richer diagnostics are useful later but should not block the next UI restructuring.
+- CRISP form-factor service output is calibrated form-factor squared:
+  `|F(f)|^2 = corrected_signal / charge^2 / detector_response`.
+- PhaseWeaver plots and generic reconstruction use `|F|`, so CRISP `|F|^2`
+  becomes `sqrt(|F|^2)` for `MeasuredFormFactor`.
+- The CRISP reconstruction algorithm should keep using the original `|F|^2`
+  input because that is what the upstream algorithm expects.
+- Ocean/NIR spectra are wavelength/intensity data in arbitrary units. They
+  should not be presented as absolute form factor without a measured response
+  calibration. The first useful role is a relative high-frequency shape
+  constraint.
 
-4. Reconstruct from the active measurement set.
-   - Reconstruction should use the selected loaded or generated measurements.
-   - Reconstruction configuration should remain part of a shared app/session data model, but its controls should move out of the main view.
+## What The App Does Today
 
-5. Keep the main view focused.
-   - The main window should be centered on two large plots:
-     - left: current/profile in time,
-     - right: Fourier/form-factor view in frequency.
-   - Secondary controls are now available through menus and optional external windows instead of permanently crowding the main plotting workspace.
+The active GUI remains a focused plotting workbench:
 
-Important deferred decisions:
+- Main view: time-domain current/profile plot and frequency-domain
+  magnitude/phase plot.
+- `File > Load Measurements...`: loads `.npz`, `.h5`, and `.hdf5` measurement
+  files.
+- `File > Export Data...`: writes plot arrays, loaded measurement arrays,
+  profile/reconstruction settings, reconstruction summary, and CRISP diagnostics
+  when available.
+- `View > Toy Model`: opens the configurable background/spike/spike-2 profile
+  generator.
+- `View > Reconstruction Setup`: opens algorithm selection, phase init,
+  simulated CRISP/IR fallback selectors, constraints, stop conditions, auto
+  reconstruction, and run controls.
+- Status summary: source, algorithm, measurement count, run state, iterations,
+  stop reason, and final Gerchberg-Saxton measurement error when applicable.
 
-- The project will keep `.npz` as the first measurement-bundle format, but the exact schema should be revised only after real CRISP/IR files and simulation files are in hand.
-- Simulated profile loading is not the first implementation priority.
-- When file-based simulation data exists, the toy model may need an explicit enabled/disabled state so it no longer competes with loaded profiles.
+The reconstruction workflow is now:
 
-## Operational Readiness
-
-If the goal is to keep PhaseWeaver useful while the UI is being reworked, the important path is now:
-
-1. Keep measurement loading available.
-   - Supported input is currently one `.npz` file.
-   - Single-measurement schema: `freq_hz`, `mag`, optional `label`.
-   - Multi-measurement schema: `freq_hz_0`, `mag_0`, `label_0`, `freq_hz_1`, `mag_1`, `label_1`, etc.
-   - Frequencies are in Hz; magnitudes are dimensionless `|F|`.
-
-2. Keep reconstruction deliberate.
-   - Parameter changes redraw the input/model only.
-   - GS runs only when the operator presses `Run Reconstruction`.
-   - Loaded measurements override simulated CRISP/IR measurements; simulated measurements remain as a demo fallback.
-
-3. Compare model, measurements, and reconstruction.
-   - The super-Gaussian model `|F|` stays visible.
-   - Loaded measurements render as spectrum markers.
-   - Reconstructed `|F|` and phase render after a successful reconstruction run.
-
-4. Keep data actions in the menu bar.
-   - Export uses a save dialog instead of always overwriting `export.npz`.
-   - The `.npz` export includes plot arrays, loaded measurement arrays/labels, profile parameters, phase init mode, and reconstruction summary fields.
-   - `File > Load Measurements...` and `File > Export Data...` are the active loading/export entry points.
-
-5. Preserve the reconstruction overview.
-   - The GUI shows measurement source, measurement count, reconstruction state, iterations, stop reason, and final measurement error.
-
-6. Keep the UI responsive enough.
-   - The current synchronous reconstruction is acceptable for now if it stays fast.
-   - If experiment-sized data makes the window stall, move reconstruction off the UI thread next.
+1. Build or update the toy-model input profile.
+2. Compute its reference form factor for visualization and simulated fallback
+   measurements.
+3. Optionally load `.npz` or CRISP HDF5 measurements.
+4. Pick `Gerchberg-Saxton` or `CRISP`.
+5. Run reconstruction from the active measurement set.
+6. Render the reconstructed current/profile and form factor.
+7. Export the run with enough metadata to inspect it later.
 
 ## Current Repository Snapshot
 
 - Branch: `main`
-- Tracking: `origin/main`
-- Local status: use `git status -sb` for the live ahead/behind snapshot
-- Latest commit: use `git log --oneline -1` for the live HEAD commit
-- Worktree state at last update: clean
-- Package version: `0.4.0`
+- Package version: `0.5.0`
 - Python package layout: `src/phase_weaver`
-- Main executable: `phase_weaver = phase_weaver.app:main`
-- Main app entrypoint: `src/phase_weaver/app/main.py`
 - GUI framework: PySide6
 - Plotting: pyqtgraph
 - Core numerical dependencies: NumPy, SciPy
+- HDF5 dependency: h5py
 - Test runner: Pytest
 - Type checker: basedpyright
 - Linter: Ruff
 
-Current notable uncommitted paths:
+Current notable local changes before this state update:
 
-- none
+- New docs under `docs/`.
+- New `src/phase_weaver/core/crisp_reconstruction.py`.
+- New CRISP reconstruction tests in `tests/core/test_crisp_reconstruction.py`.
+- App logic updates for `.h5/.hdf5` loading, CRISP algorithm dispatch, and CRISP
+  export diagnostics.
+- UI/state updates for algorithm selection and persistence.
+- Plot model/panel fixes so reconstruction data may live on a different grid
+  than the input model, and manual axis ranges survive refreshes.
+- `notebooks/scratch.ipynb` removed from the working tree.
+- Optional reference-HDF5 comparison test that uses
+  `2026.06.17_10.48.04.h5` only when that local recording is available; the
+  recording itself is sample data and is not part of the committed project
+  state.
 
-## What The App Does Today
+## Implemented CRISP Path
 
-The app currently presents a focused plotting workbench in the main window:
+The current CRISP implementation is intentionally close to the documented
+upstream server:
 
-- Two large plots for time-domain current/profile and frequency-domain form factor.
-- `File > Load Measurements...` and `File > Export Data...` for data actions.
-- A status summary row for measurement source/count, reconstruction state, iterations, stop reason, and final error.
-- `View > Toy Model` opens a modeless external window with the configurable background/spike/spike-2 super-Gaussian profile generator.
-- `View > Reconstruction Setup` opens a modeless external window with phase init, measurement fallback selection, time constraints, frequency constraints, stop conditions, auto reconstruction, and run reconstruction.
-- Immediate plots for:
-  - time-domain current/profile,
-  - spectrum magnitude,
-  - spectrum phase,
-  - reconstructed current/profile.
+- Input validation and sorting on positive THz frequencies.
+- Neighbor masking around NaNs and points below detection limit.
+- Cutoff after a run of bad points.
+- Clamping `|F|^2` to `[0, 1]`.
+- Low-frequency Gaussian fit from early valid points.
+- High-frequency Gaussian from the last valid measured point.
+- Extrapolation toward 0 THz and up to the configured maximum frequency.
+- 9-point, order-3 Savitzky-Golay smoothing with edge preservation.
+- Interpolation to the positive half-grid and conversion to `|F|`.
+- Kramers-Kronig phase calculation.
+- Symmetric complex spectrum construction and iFFT start profile.
+- Up to 20 iterations of positive-main-peak isolation, FFT/DC normalization,
+  measured modulus replacement outside the 20 percent band, iFFT, and recentering.
+- Final current scaling by charge and time step.
+- Diagnostics for intermediate arrays, first iteration profiles, iterations,
+  peak current, FWHM, RMS width, and skewness.
 
-The reconstruction path currently works like this:
+Known differences and caveats:
 
-1. UI state is collected in `ControlsState`.
-2. `AppLogic.compute_input_profile()` builds a `CurrentProfile`.
-3. `Profile.to_form_factor()` computes the reference form factor.
-4. The operator may load one `.npz` measurement bundle with one or more measured form-factor magnitudes.
-5. The operator presses `Run Reconstruction`.
-6. `AppLogic.active_measurements()` uses loaded measurements when available, otherwise simulated CRISP/IR measurements.
-7. `GerchbergSaxton` builds an initial form factor by Gaussian-extending measured magnitude data.
-8. Iteration alternates between time-domain constraints and frequency-domain constraints.
-9. The reconstructed profile, reconstructed spectrum, loaded measurement markers, and reconstruction summary are rendered in the GUI.
-
-This now matches the intended near-term UI shape: a main plotting workspace plus optional setup windows.
-
-## Core Architecture
-
-Important modules:
-
-- `src/phase_weaver/core/base.py`
-  - Defines `Grid`, `Profile`, `CurrentProfile`, `FormFactor`, and FFT transforms.
-  - `DCPhysicalRFFT` is the main transform used by app and reconstruction.
-  - `BandLimitedDCPhysicalRFFT` exists for cutoff-limited experiments.
-
-- `src/phase_weaver/core/constraints.py`
-  - Time constraints include non-negativity, area normalization, centering, and cutting after zeros.
-  - Frequency constraints include magnitude clamping, DC normalization, measurement blending, and phase-tail replacement helpers.
-
-- `src/phase_weaver/core/reconstruction.py`
-  - Contains the current reconstruction framework.
-  - `GerchbergSaxton` is now the main algorithm.
-  - Stopping criteria include max iterations, min iterations, phase stability, and measured-magnitude distance.
-  - Older classes such as `GSMagnitudeOnly`, initializer classes, and app service wrappers appear to have been removed.
-
-- `src/phase_weaver/app/state.py`
-  - Holds UI state dataclasses and the profile model.
-  - The profile model currently lives here, while tests previously expected it under `phase_weaver.model.profile_model`.
-
-- `src/phase_weaver/app/logic.py`
-  - Bridges UI state to profile generation, measurement loading/simulation, reconstruction, summary reporting, and NPZ export.
-
-- `src/phase_weaver/app/ui/`
-  - Contains Qt widgets for workflow controls, setup windows, and plots.
-  - `toy_model_panel.py` holds the three-super-Gaussian model controls.
-  - `reconstruction_panel.py` holds phase init, measurement fallback selection, constraints, stop conditions, and reconstruction run/auto controls.
-  - `plot_controls_box.py` keeps only line-visibility controls; normalized time plotting is not exposed.
-  - Reconstruction history is preserved in-memory and exported alongside the main arrays, which makes the latest reconstruction runs easier to inspect later.
+- HDF5 loading currently uses zero standard deviation and zero detection limit
+  unless matching datasets are added to the loader.
+- The Python port is covered by synthetic tests and one optional reference-HDF5
+  comparison, but it should still be validated against more upstream/reference
+  cases.
+- The generic app measurement abstraction stores magnitudes, while CRISP
+  diagnostics and the CRISP algorithm need squared magnitudes. The current code
+  handles this split, but future loader/export schemas should make it explicit.
+- Ocean/NIR data is not implemented as a loader yet.
 
 ## Verification Results
 
-Commands run on 2026-06-16:
-
-```bash
-uv run pytest
-```
-
-Result: pass.
-
-- 232 tests collected.
-- 232 passed.
+Latest verified before this commit:
 
 ```bash
 uv run pytest tests
@@ -179,36 +161,8 @@ uv run pytest tests
 
 Result: pass.
 
-- 232 tests collected.
-- 232 passed.
-
-```bash
-uv run ruff check .
-```
-
-Result: fail.
-
-Main causes:
-
-- Stale notebook imports.
-- Unused imports in stale/dev code and older support modules.
-- Broad workspace drift outside the focused fix area.
-
-```bash
-uv run basedpyright
-```
-
-Result: fail.
-
-There are many errors, but the highest-signal groups are:
-
-- Stale `scripts/reconstruction_dev.py` imports and constructor calls.
-- Removed measurement config constants still referenced by `measurement_box.py`.
-- Generic enum selector widgets return `Enum`, while callers expect specific enum types.
-- PySide6 enum/type-stub mismatches.
-- Core `Profile` vs `CurrentProfile` typing is inconsistent.
-
-GUI smoke check:
+- 264 tests collected.
+- 264 passed.
 
 ```bash
 QT_QPA_PLATFORM=offscreen uv run python -c "<construct QApplication and MainWindow, quit after 200 ms>"
@@ -216,167 +170,51 @@ QT_QPA_PLATFORM=offscreen uv run python -c "<construct QApplication and MainWind
 
 Result: pass.
 
-The app window constructs and enters/exits the Qt event loop in offscreen mode. Qt emitted non-fatal warnings about missing `Sans Serif` font alias and `propagateSizeHints()`.
+The app window constructs and enters/exits the Qt event loop in offscreen mode.
 
-## Current Problems And Next Decisions
+Static tooling status has not been made a release gate yet:
 
-### 1. The Test Layout Is Mostly Stable
+- `ruff check .` still needs a focused cleanup pass before it should be treated
+  as a required green check.
+- `basedpyright` still has known PySide/test typing noise and architecture
+  cleanup work before it can be used as a hard gate.
 
-`pytest` now runs cleanly. The project still needs one canonical documented command for day-to-day contributors, but this is no longer blocking app usage.
+## Steps Forward
 
-### 2. The Main UI Is Now A Plotting Workbench
+1. Validate the CRISP Python reconstruction against more real/reference data.
+   Compare peak current, FWHM, RMS width, skewness, intermediate arrays, and
+   iteration count against the upstream server where possible.
 
-The main window no longer mixes plotting, toy-model definition, reconstruction configuration, and data actions in one always-visible area. The central UI is now the two-plot workspace plus a status summary.
+2. Extend CRISP HDF5 loading beyond the current minimal path.
+   Add standard deviation, detection limit, and richer metadata when the exact
+   dataset keys are available. Keep both `|F|^2` and `|F|` semantics explicit.
 
-Current shape:
+3. Add shot selection to the GUI.
+   The loader already supports an explicit HDF5 shot index; the app should let
+   the operator choose a shot instead of always loading the latest one.
 
-- `View > Toy Model` opens the three-super-Gaussian model in a persistent external window.
-- `View > Reconstruction Setup` opens phase initialization, measurement fallback selection, constraints, stop conditions, auto reconstruction, and run reconstruction in a persistent external window.
-- The `File` menu owns load measurements and export data actions.
-- The main window retains only the plots and reconstruction status summary.
+4. Add an Ocean/NIR loader as a relative measurement path.
+   Load wavelength/intensity, optionally subtract dark, convert wavelength to
+   frequency, compute `sqrt(signal)`, robustly normalize, and label it as
+   relative `Ocean NIR |F|` or a shape constraint.
 
-Remaining UI direction:
+5. Introduce a dedicated relative-shape frequency constraint.
+   CRISP should remain the calibrated amplitude constraint. Ocean should guide
+   shape in the NIR band without imposing an arbitrary absolute amplitude.
 
-- Decide whether a future toolbar is useful for frequently used actions.
-- Keep the main window free of detailed setup controls unless a control directly supports plot reading.
+6. Clarify export/import schema.
+   Store measurement kind, squared-vs-magnitude semantics, source file, shot
+   index, timestamp, charge, calibration state, and processing choices.
 
-### 3. Measurement UI Still Has Some Drift
+7. Clean static tooling drift.
+   Bring Ruff close to green first. Treat basedpyright as a later architecture
+   pass because several issues are PySide stub friction or broader type design
+   questions.
 
-The active operator workflow now supports loading real `.npz` measurement bundles. The old standalone measurement widget has now been removed, but the measurement model still reflects an earlier UI direction.
-
-- Current active UI: `ReconstructionPanel` has simulated CRISP/IR fallback selectors plus run/auto controls; file actions live in the `File` menu.
-- Removed stale UI: `measurement_box.py` and the old `ControlsPanel` have been deleted from the active code path.
-
-Impact:
-
-- Simulated CRISP and infrared ranges are currently hard-coded in config.
-- The app does not yet have a dedicated measurement-configuration window beyond the fallback selectors used for demo/synthetic data.
-
-Likely next decision:
-
-- Keep external `.npz` measurements as the first real measurement path, while deferring exact schema finalization until real files are available.
-- Decide later whether richer measurement configuration belongs in its own tool window or should stay out of the GUI entirely.
-
-### 4. Plot Controls Are Now Simpler
-
-`plot_controls_box.py` now controls line visibility only, and it sits to the left of the plots. The normalized time mode is no longer exposed in the active UI.
-
-### 5. Recent Plot Polish Landed
-
-The latest local commits focused on plot readability and layout stability:
-
-- theme switching no longer disturbs the plot layout
-- embedded plot DPI is fixed
-- plot colors are adjusted for better colorblind friendliness
-
-Remaining polish:
-
-- The old `TIME_PLOT_MODE.NORMALIZED` enum still exists in config but is not reachable from the GUI.
-- A later cleanup can remove the unused enum and normalized plot-model helpers.
-
-### 6. Lint And Type Checking Are Not Clean
-
-The project has working runtime tests, but the static tooling reports a lot of noise. Some issues are harmless typing friction around PySide6 stubs; others are real drift from refactors.
-
-High-priority static issues:
-
-- Stale config references in `measurement_box.py`.
-- Stale development script imports.
-- Generic enum type mismatch in option selector widgets.
-
-Lower-priority/static-noise issues:
-
-- PySide6 enum stub problems such as `Qt.Horizontal` and `QPalette.Window`.
-- Tests that intentionally instantiate abstract classes inside `pytest.raises`.
-- Tests that intentionally assign to slotted dataclasses to verify slot behavior.
-
-### 7. App/Core Boundaries Are Blurred
-
-`core/reconstruction.py` imports `PHASE_INIT_MODE` from `phase_weaver.app.state` inside a method, so the reconstruction layer still reaches into app state for one of its mode enums.
-
-Impact:
-
-- The core reconstruction module depends on app UI state.
-- It is harder to reuse reconstruction outside the GUI.
-
-Better direction:
-
-- Move reconstruction configuration types into `core` or use a small protocol/value object.
-- Keep app-specific widgets and config conversion in `app`.
-- Let `core` accept primitive or core-owned enums.
-
-### 8. Developer Artifacts Need Sorting
-
-Current artifacts that should be intentionally handled:
-
-- `.tmp-mpl/` should probably be gitignored.
-- `notebooks/scratch.ipynb` has large uncommitted changes and lint noise.
-- `scripts/reconstruction_dev.py` is now aligned with the current app state types, but it still needs a decision on whether it remains a supported developer tool.
-- `Makefile` is useful, but should be committed only after deciding the canonical test commands.
-
-## Recommended Direction
-
-### Near-Term Stabilization
-
-1. Clean stale code from the current refactor.
-   - Remove any remaining imports or references that assume the deleted `ControlsPanel` or `MeasurementBox`.
-   - Decide whether `scripts/reconstruction_dev.py` stays as a maintained developer script.
-   - Add `.tmp-mpl/` to `.gitignore`.
-
-2. Keep the setup windows stable.
-   - The Toy Model and Reconstruction Setup controls now live in persistent external windows.
-   - Preserve their current state-driven behavior while stale UI modules are removed.
-   - Later, add a clear state transition for disabling toy-model generation when a file-based simulated profile is loaded.
-
-3. Verify export completeness.
-   - Keep `.npz` as the first measurement-bundle/export format.
-   - Confirm the export contains enough metadata for the current UI split.
-   - Defer precise schema work for real CRISP/IR and simulation files until examples are available.
-
-4. Bring Ruff close to green.
-   - Auto-fix unused imports where safe.
-   - Exclude notebooks if they are exploratory.
-   - Keep lint focused on package code and tests.
-
-### Medium-Term Architecture
-
-1. Separate core reconstruction from app state.
-   - Put reconstruction config in `core`.
-   - Make the GUI adapt its controls into core config.
-   - Avoid importing app enums from core modules.
-
-2. Clarify simulated measurement modeling.
-   - Decide how generated CRISP and infrared spectrometer measurements are represented in the shared data model.
-   - Support visual comparison between generated and loaded measurements first.
-   - Add residuals and numerical metrics later.
-
-3. Improve reconstruction observability beyond the first summary.
-   - The app now reports iterations, stop reason, and final measurement error.
-   - A later improvement could show convergence history across iterations.
-
-4. Restore meaningful app tests.
-   - Add tests for `AppLogic`, measurement slicing, plot model mode switching, and phase initialization.
-
-### Product Direction
-
-PhaseWeaver should move toward being a trustworthy interactive reconstruction workbench:
-
-- The controls should map clearly to the physical/reconstruction model.
-- Users should be able to compare true/input, measured, and reconstructed quantities without ambiguous units.
-- Users should be able to generate data from the toy model, load measurement data, and reconstruct from the active measurement set without the main window becoming a control dump.
-- Reconstruction results should expose convergence status, not just a plotted line.
-- Exported data should include enough metadata to reproduce the run: profile parameters, measurement mode/ranges/scales, phase init mode, algorithm settings, and stop reason.
-
-## Suggested Next Work Order
-
-1. Decide whether stale `measurement_box.py` should be deleted or folded into the new window structure.
-1. Remove any lingering references to the deleted `measurement_box.py` and `controls_panel.py` from docs, scripts, and tooling.
-2. Decide whether `scripts/reconstruction_dev.py` should remain a maintained developer entry point.
-3. Add `.tmp-mpl/` to `.gitignore`.
-4. Verify exported `.npz` files contain all metadata needed after a run.
-5. Keep `.npz` measurement loading working, but defer schema expansion until real CRISP/IR and simulation files are available.
-6. Clean Ruff errors in source files.
-7. Decide whether basedpyright should gate CI now or after PySide/test typing noise is reduced.
+8. Keep the main UI focused.
+   Preserve the two-plot main window. Put data selection, shot selection,
+   reconstruction settings, and future Ocean processing controls into explicit
+   menus or tool windows.
 
 ## Useful Commands
 
@@ -384,25 +222,25 @@ PhaseWeaver should move toward being a trustworthy interactive reconstruction wo
 uv run pytest tests
 ```
 
-Runs the currently passing active unit suite.
+Runs the active unit suite.
 
 ```bash
-uv run pytest
+QT_QPA_PLATFORM=offscreen uv run python -c "import sys; from PySide6.QtCore import QTimer; from PySide6.QtWidgets import QApplication; from phase_weaver.qt_theme import set_dark_theme; from phase_weaver.app.ui.main_window import MainWindow; app=QApplication(sys.argv); set_dark_theme(app); w=MainWindow(); w.show(); QTimer.singleShot(200, app.quit); raise SystemExit(app.exec())"
 ```
 
-Runs the full active suite.
+Runs a headless GUI construction smoke test.
 
 ```bash
 uv run ruff check .
 ```
 
-Currently fails; useful for identifying stale imports and undefined names.
+Finds lint/static cleanup items.
 
 ```bash
 uv run basedpyright
 ```
 
-Currently fails with many errors; useful after the refactor is cleaned up.
+Runs the current type checker.
 
 ```bash
 uv run phase_weaver
@@ -412,6 +250,9 @@ Runs the GUI app in a normal desktop session.
 
 ## Bottom Line
 
-The project is in a good place for the next structural step: the numerical core and active tests are alive, the GUI starts, the first reconstruction workflow exists, and the main window now reads like a focused plotting workbench.
-
-The best next move is to finish the cleanup pass around this refactor and verify export metadata now that the workflow shell is in place. The exact real-data schemas can wait until the CRISP/IR and simulation examples are available.
+PhaseWeaver now has the first real bridge from documented CRISP server behavior
+into the app: import CRISP HDF5, reconstruct with a CRISP-like algorithm, inspect
+diagnostics, and export the run. The next step is not more generic UI work; it is
+calibration-aware data handling: validate CRISP against more real shots, expose
+shot selection, and add Ocean/NIR as an explicitly relative high-frequency
+shape constraint.

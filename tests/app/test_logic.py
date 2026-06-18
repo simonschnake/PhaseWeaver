@@ -2,9 +2,10 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
-from phase_weaver.app.config import PHASE_INIT_MODE
+from phase_weaver.app.config import PHASE_INIT_MODE, RECONSTRUCTION_ALGORITHM
 from phase_weaver.app.logic import (
     AppLogic,
+    CRISP_CHARGE_KEY,
     CRISP_FORMFACTOR_XY_KEY,
     ReconstructionSummary,
     TIMESTAMP_KEY,
@@ -94,6 +95,54 @@ def test_load_measurements_h5_uses_latest_timestamped_crisp_row(tmp_path):
     assert measurements[0].label == "CRISP latest 1970-01-01T00:05:00+00:00"
     assert_allclose(measurements[0].measured.freq, [0.3e12, 0.4e12])
     assert_allclose(measurements[0].measured.mag, [0.3, 0.4])
+
+
+def test_load_measurements_h5_builds_crisp_input_with_charge(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "measurement.h5"
+    with h5py.File(path, "w") as data:
+        data.create_dataset(TIMESTAMP_KEY, data=np.array([100.0, 300.0]))
+        data.create_dataset(CRISP_CHARGE_KEY, data=np.array([0.1, 0.25]))
+        data.create_dataset(
+            CRISP_FORMFACTOR_XY_KEY,
+            data=np.array(
+                [
+                    [[0.1, 0.01], [0.2, 0.04]],
+                    [[0.3, 0.09], [0.4, -0.16]],
+                ],
+                dtype=np.float32,
+            ),
+        )
+
+    measurements = load_measurements_h5(path)
+
+    crisp_input = measurements[0].crisp_input
+    assert crisp_input is not None
+    assert crisp_input.shot_index == 1
+    assert crisp_input.charge_c == pytest.approx(0.25e-9)
+    assert_allclose(crisp_input.freq_hz, [0.3e12, 0.4e12])
+    assert_allclose(crisp_input.ffsq, [0.09, -0.16])
+
+
+def test_load_measurements_h5_skips_negative_crisp_points(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "measurement.h5"
+    with h5py.File(path, "w") as data:
+        data.create_dataset(TIMESTAMP_KEY, data=np.array([100.0]))
+        data.create_dataset(
+            CRISP_FORMFACTOR_XY_KEY,
+            data=np.array(
+                [
+                    [[0.1, 0.01], [0.2, -1.0], [0.3, 0.09]],
+                ],
+                dtype=np.float32,
+            ),
+        )
+
+    measurements = load_measurements_h5(path)
+
+    assert_allclose(measurements[0].measured.freq, [0.1e12, 0.3e12])
+    assert_allclose(measurements[0].measured.mag, [0.1, 0.3])
 
 
 def test_list_h5_measurement_shots_returns_available_timestamps(tmp_path):
@@ -237,6 +286,63 @@ def test_app_logic_visible_measurements_prefer_loaded(tmp_path):
 
     assert [item.label for item in visible] == ["Loaded CRISP", "Loaded IR"]
     assert_allclose(visible[0].measured.freq, [10.0, 20.0])
+
+
+def test_app_logic_runs_crisp_algorithm_from_simulated_crisp_band():
+    logic = AppLogic()
+    state = ControlsState(
+        scenario=ProfileModelState(),
+        measurement=MeasurementState(crisp=True),
+        reconstruction=ReconstructionState(
+            algorithm=RECONSTRUCTION_ALGORITHM.CRISP,
+        ),
+    )
+
+    prof_input, ff_input, measurements = logic.compute_initial(state)
+    prof_recon, ff_recon, summary = logic.compute_reconstruction(
+        grid=prof_input.grid,
+        measurements=measurements,
+        controls_state=state,
+        ff_input=ff_input,
+    )
+
+    assert summary.algorithm == "CRISP"
+    assert summary.status == "finished"
+    assert summary.crisp_diagnostics is not None
+    assert prof_recon.grid.N == 1024
+    assert ff_recon.mag.shape == (513,)
+    assert summary.iterations <= 20
+
+
+def test_export_npz_includes_crisp_diagnostics(tmp_path):
+    logic = AppLogic()
+    state = ControlsState(
+        scenario=ProfileModelState(),
+        measurement=MeasurementState(crisp=True),
+        reconstruction=ReconstructionState(
+            algorithm=RECONSTRUCTION_ALGORITHM.CRISP,
+        ),
+    )
+    prof_input, ff_input, measurements = logic.compute_initial(state)
+    prof_recon, ff_recon, summary = logic.compute_reconstruction(
+        grid=prof_input.grid,
+        measurements=measurements,
+        controls_state=state,
+        ff_input=ff_input,
+    )
+    time_model = TimePlotModel(profile_input=prof_input, profile_recon=prof_recon)
+    spectrum_model = SpectrumPlotModel(
+        formfactor_input=ff_input,
+        formfactor_recon=ff_recon,
+    )
+    path = tmp_path / "export.npz"
+
+    logic.export_npz(path, time_model, spectrum_model, controls_state=state, summary=summary)
+
+    with np.load(path) as data:
+        assert data["reconstruction_algorithm"] == "CRISP"
+        assert data["crisp_num_iterations"] == summary.iterations
+        assert data["crisp_interpolated_ffabs"].shape == (512,)
 
 
 def test_app_logic_export_writes_measurements_and_summary(tmp_path):

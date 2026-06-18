@@ -17,6 +17,11 @@ class ReconstructionPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        self.algorithm_box = OptionSelectorBox(
+            "Algorithm",
+            enum_cls=cfg.RECONSTRUCTION_ALGORITHM,
+            default=cfg.RECONSTRUCTION_ALGORITHM_DEFAULT,
+        )
         # self.mag_init_box = OptionSelectorBox(
         #    "Magnitude Init", enum_cls=cfg.MAG_INIT_MODE, default=cfg.MAG_INIT_DEFAULT
         # )
@@ -46,6 +51,7 @@ class ReconstructionPanel(QWidget):
         # self.band_limit_box = BandLimitBox()
 
         for widget in (
+            self.algorithm_box,
             self.phase_init_box,
             self.measurement_box,
             self.time_constraint_box,
@@ -58,6 +64,7 @@ class ReconstructionPanel(QWidget):
 
         layout = QVBoxLayout(self)
         # layout.addWidget(self.mag_init_box)
+        layout.addWidget(self.algorithm_box)
         layout.addWidget(self.phase_init_box)
         layout.addWidget(self.measurement_box)
         layout.addWidget(self.time_constraint_box)
@@ -88,6 +95,10 @@ class ReconstructionPanel(QWidget):
 
         return ReconstructionState(
             # mag_init_mode=self.mag_init_box.mode,
+            algorithm=cast(
+                cfg.RECONSTRUCTION_ALGORITHM,
+                self.algorithm_box.mode,
+            ),
             phase_init_mode=cast(cfg.PHASE_INIT_MODE, self.phase_init_box.mode),
             time_constraints=cast(
                 set[cfg.RECON_TIME_CONSTRAINT],
@@ -106,6 +117,7 @@ class ReconstructionPanel(QWidget):
         )
 
     def set_reconstruction_state(self, state: ReconstructionState) -> None:
+        self.algorithm_box.mode = state.algorithm
         self.phase_init_box.mode = state.phase_init_mode
         self.time_constraint_box.selected_modes = set(state.time_constraints)
         self.frequency_constraint_box.selected_modes = set(

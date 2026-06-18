@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from typing import NamedTuple
 
 import numpy as np
 from PySide6.QtCore import Qt
@@ -105,6 +106,14 @@ class LambdaAxis(pg.AxisItem):
         return labels
 
 
+class PlotAxisRanges(NamedTuple):
+    time_x: tuple[float, float]
+    time_y: tuple[float, float]
+    spectrum_x: tuple[float, float]
+    spectrum_y: tuple[float, float]
+    phase_y: tuple[float, float]
+
+
 class PlotCanvas(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -186,6 +195,7 @@ class PlotPanel(QWidget):
         self.canvas.spectrum_plot.setXRange(0.0, 333e12, padding=0.0)
 
     def render_input(self, prof_input: Profile, formfactor_input: FormFactor):
+        axis_ranges = self._axis_ranges() if self._has_rendered_data() else None
         if self.time_model is None:
             if type(prof_input) is not CurrentProfile:
                 prof_input = CurrentProfile.from_profile(prof_input)
@@ -204,6 +214,8 @@ class PlotPanel(QWidget):
         self._apply_spectrum_axes()
         self._render_fwhm()
         self._apply_line_visibility()
+        if axis_ranges is not None:
+            self._restore_axis_ranges(axis_ranges)
         self.refresh_canvas()
 
     def render_reconstruction(
@@ -218,6 +230,7 @@ class PlotPanel(QWidget):
                 "Spectrum model is not initialized. Call render_input() first."
             )
 
+        axis_ranges = self._axis_ranges()
         self.time_model.update(profile_recon=prof_recon)
         self.spectrum_model.update(formfactor_recon=formfactor_recon)
         self._render_time()
@@ -226,6 +239,7 @@ class PlotPanel(QWidget):
         self._apply_spectrum_axes()
         self._render_fwhm()
         self._apply_line_visibility()
+        self._restore_axis_ranges(axis_ranges)
         self.refresh_canvas()
 
     def clear_reconstruction(self) -> None:
@@ -234,12 +248,14 @@ class PlotPanel(QWidget):
         if self.spectrum_model is not None:
             self.spectrum_model.formfactor_recon = None
         if self.time_model is not None and self.spectrum_model is not None:
+            axis_ranges = self._axis_ranges()
             self._render_time()
             self._render_spectrum()
             self._apply_time_axes()
             self._apply_spectrum_axes()
             self._render_fwhm()
             self._apply_line_visibility()
+            self._restore_axis_ranges(axis_ranges)
             self.refresh_canvas()
 
     def render_measurements(
@@ -287,8 +303,9 @@ class PlotPanel(QWidget):
             self.time_model.t_plot_s, self.time_model.current_input_plot_A
         )
         recon_y = self.time_model.current_recon_plot_A
-        if recon_y is not None:
-            self.line_recon.setData(self.time_model.t_plot_s, recon_y)
+        recon_x = self.time_model.t_recon_plot_s
+        if recon_x is not None and recon_y is not None:
+            self.line_recon.setData(recon_x, recon_y)
         else:
             self.line_recon.setData([], [])
 
@@ -304,9 +321,10 @@ class PlotPanel(QWidget):
         )
 
         mag_recon = self.spectrum_model.mag_recon_ui
-        if mag_recon is not None:
+        f_recon = self.spectrum_model.f_recon_plot_Hz
+        if f_recon is not None and mag_recon is not None:
             self.line_mag_recon.setData(
-                f_ui, self._magnitude_for_log_axis(mag_recon)
+                f_recon, self._magnitude_for_log_axis(mag_recon)
             )
         else:
             self.line_mag_recon.setData([], [])
@@ -314,8 +332,8 @@ class PlotPanel(QWidget):
         self.line_phase_in.setData(f_ui, self.spectrum_model.phase_input_ui)
 
         phase_recon = self.spectrum_model.phase_recon_ui
-        if phase_recon is not None:
-            self.line_phase_recon.setData(f_ui, phase_recon)
+        if f_recon is not None and phase_recon is not None:
+            self.line_phase_recon.setData(f_recon, phase_recon)
         else:
             self.line_phase_recon.setData([], [])
 
@@ -350,6 +368,7 @@ class PlotPanel(QWidget):
             self._position_fwhm_labels()
 
     def _render_from_controls(self) -> None:
+        axis_ranges = self._axis_ranges() if self._has_rendered_data() else None
         if self.time_model is not None:
             self._render_time()
             self._apply_time_axes()
@@ -360,6 +379,8 @@ class PlotPanel(QWidget):
             self._apply_spectrum_axes()
 
         self._apply_line_visibility()
+        if axis_ranges is not None:
+            self._restore_axis_ranges(axis_ranges)
         self.refresh_canvas()
 
     def _apply_time_axes(self) -> None:
@@ -384,6 +405,41 @@ class PlotPanel(QWidget):
         self.canvas.spectrum_plot.setXRange(x0, x1, padding=0.0)
         self.canvas.spectrum_plot.enableAutoRange(axis="y")
         self.canvas.phase_view.enableAutoRange(axis="y")
+        self.canvas._sync_phase_view()
+
+    def _has_rendered_data(self) -> bool:
+        return self.time_model is not None and self.spectrum_model is not None
+
+    def _axis_ranges(self) -> PlotAxisRanges:
+        time_x, time_y = self.canvas.time_plot.getViewBox().viewRange()
+        spectrum_x, spectrum_y = self.canvas.spectrum_plot.getViewBox().viewRange()
+        _phase_x, phase_y = self.canvas.phase_view.viewRange()
+        return PlotAxisRanges(
+            time_x=tuple(time_x),
+            time_y=tuple(time_y),
+            spectrum_x=tuple(spectrum_x),
+            spectrum_y=tuple(spectrum_y),
+            phase_y=tuple(phase_y),
+        )
+
+    def _restore_axis_ranges(self, ranges: PlotAxisRanges) -> None:
+        self.canvas.time_plot.getViewBox().setRange(
+            xRange=ranges.time_x,
+            yRange=ranges.time_y,
+            padding=0.0,
+            disableAutoRange=True,
+        )
+        self.canvas.spectrum_plot.getViewBox().setRange(
+            xRange=ranges.spectrum_x,
+            yRange=ranges.spectrum_y,
+            padding=0.0,
+            disableAutoRange=True,
+        )
+        self.canvas.phase_view.setRange(
+            yRange=ranges.phase_y,
+            padding=0.0,
+            disableAutoRange=True,
+        )
         self.canvas._sync_phase_view()
 
     def _apply_line_visibility(self) -> None:

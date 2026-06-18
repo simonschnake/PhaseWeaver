@@ -55,6 +55,10 @@ class TimePlotModel:
         return self.profile_input.grid.t
 
     @property
+    def t_recon(self) -> np.ndarray | None:
+        return self.profile_recon.grid.t if self.profile_recon is not None else None
+
+    @property
     def current_input(self) -> np.ndarray:
         return self.profile_input.current
 
@@ -85,8 +89,20 @@ class TimePlotModel:
         return self.t_fs[self._mask]
 
     @property
+    def t_recon_ui(self) -> np.ndarray | None:
+        if self.t_recon is None:
+            return None
+        return self.t_recon[self._recon_mask] * 1e15
+
+    @property
     def t_plot_s(self) -> np.ndarray:
         return self.t[self._mask]
+
+    @property
+    def t_recon_plot_s(self) -> np.ndarray | None:
+        if self.t_recon is None:
+            return None
+        return self.t_recon[self._recon_mask]
 
     @property
     def current_input_ui(self) -> np.ndarray:
@@ -99,14 +115,14 @@ class TimePlotModel:
     @property
     def current_recon_ui(self) -> np.ndarray | None:
         if self.current_recon_kA is not None:
-            return self.current_recon_kA[self._mask]
+            return self.current_recon_kA[self._recon_mask]
         else:
             return None
 
     @property
     def current_recon_plot_A(self) -> np.ndarray | None:
         if self.current_recon is not None:
-            return self.current_recon[self._mask]
+            return self.current_recon[self._recon_mask]
         else:
             return None
 
@@ -117,7 +133,7 @@ class TimePlotModel:
     @property
     def normalized_recon_ui(self) -> np.ndarray | None:
         return (
-            self.profile_recon.values[self._mask]
+            self.profile_recon.values[self._recon_mask]
             if self.profile_recon is not None
             else None
         )
@@ -136,15 +152,20 @@ class TimePlotModel:
 
     @property
     def current_recon_fwhm(self) -> FWHMResult | None:
-        if self.current_recon_ui is not None:
-            return fwhm_highest_peak(self.t_ui, self.current_recon_ui)
+        if self.t_recon_ui is not None and self.current_recon_ui is not None:
+            return fwhm_highest_peak(self.t_recon_ui, self.current_recon_ui)
         else:
             return None
 
     @property
     def current_recon_fwhm_plot(self) -> FWHMResult | None:
-        if self.current_recon_plot_A is not None:
-            return fwhm_highest_peak(self.t_plot_s, self.current_recon_plot_A)
+        if (
+            self.t_recon_plot_s is not None
+            and self.current_recon_plot_A is not None
+        ):
+            return fwhm_highest_peak(
+                self.t_recon_plot_s, self.current_recon_plot_A
+            )
         else:
             return None
 
@@ -192,6 +213,17 @@ class TimePlotModel:
             mask &= self.t <= self.t_max
         return mask
 
+    @property
+    def _recon_mask(self) -> np.ndarray:
+        if self.t_recon is None:
+            return np.array([], dtype=bool)
+        mask = np.ones_like(self.t_recon, dtype=bool)
+        if self.t_min is not None:
+            mask &= self.t_recon >= self.t_min
+        if self.t_max is not None:
+            mask &= self.t_recon <= self.t_max
+        return mask
+
 
 @dataclass(slots=True)
 class SpectrumPlotModel:
@@ -219,6 +251,12 @@ class SpectrumPlotModel:
     @property
     def f(self) -> np.ndarray:
         return self.formfactor_input.grid.f_pos
+
+    @property
+    def f_recon(self) -> np.ndarray | None:
+        if self.formfactor_recon is None:
+            return None
+        return self.formfactor_recon.grid.f_pos
 
     @property
     def mag_input(self) -> np.ndarray:
@@ -251,13 +289,19 @@ class SpectrumPlotModel:
         return self.f[self._mask]
 
     @property
+    def f_recon_plot_Hz(self) -> np.ndarray | None:
+        if self.f_recon is None:
+            return None
+        return self.f_recon[self._recon_mask]
+
+    @property
     def mag_input_ui(self) -> np.ndarray:
         return self.mag_input[self._mask]
 
     @property
     def mag_recon_ui(self) -> np.ndarray | None:
         if self.mag_recon is not None:
-            return self.mag_recon[self._mask]
+            return self.mag_recon[self._recon_mask]
         else:
             return None
 
@@ -268,7 +312,7 @@ class SpectrumPlotModel:
     @property
     def phase_recon_ui(self) -> np.ndarray | None:
         if self.phase_recon is not None:
-            return self.phase_recon[self._mask]
+            return self.phase_recon[self._recon_mask]
         else:
             return None
 
@@ -279,6 +323,17 @@ class SpectrumPlotModel:
             mask &= self.f >= self.f_min
         if self.f_max is not None:
             mask &= self.f <= self.f_max
+        return mask
+
+    @property
+    def _recon_mask(self) -> np.ndarray:
+        if self.f_recon is None:
+            return np.array([], dtype=bool)
+        mask = np.ones_like(self.f_recon, dtype=bool)
+        if self.f_min is not None:
+            mask &= self.f_recon >= self.f_min
+        if self.f_max is not None:
+            mask &= self.f_recon <= self.f_max
         return mask
 
     @property

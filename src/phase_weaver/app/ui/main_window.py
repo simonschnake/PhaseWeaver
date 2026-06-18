@@ -261,6 +261,7 @@ class MainWindow(QMainWindow):
         measurements, source = self.logic.active_measurements(ff_input, state.measurement)
 
         running_summary = ReconstructionSummary(
+            algorithm=state.reconstruction.algorithm.value,
             measurement_source=source,
             measurement_count=len(measurements),
             status="running",
@@ -277,6 +278,7 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:
             failed_summary = ReconstructionSummary(
+                algorithm=state.reconstruction.algorithm.value,
                 measurement_source=source,
                 measurement_count=len(measurements),
                 status="failed",
@@ -287,7 +289,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Reconstruction failed", str(exc))
             return
 
-        prof_recon.charge = prof_input.charge
+        if prof_recon.charge is None:
+            prof_recon.charge = prof_input.charge
         self.plot_panel.render_input(prof_input, ff_input)
         self.plot_panel.render_measurements(
             self.logic.visible_measurements(ff_input, state.measurement)
@@ -412,6 +415,7 @@ class MainWindow(QMainWindow):
                 "infrared": state.measurement.infrared,
             },
             "reconstruction": {
+                "algorithm": state.reconstruction.algorithm.name,
                 "phase_init_mode": state.reconstruction.phase_init_mode.name,
                 "time_constraints": sorted(
                     mode.name for mode in state.reconstruction.time_constraints
@@ -455,6 +459,11 @@ class MainWindow(QMainWindow):
         )
 
         reconstruction = ReconstructionState(
+            algorithm=self._enum_from_name(
+                cfg.RECONSTRUCTION_ALGORITHM,
+                reconstruction_payload.get("algorithm"),
+                cfg.RECONSTRUCTION_ALGORITHM_DEFAULT,
+            ),
             phase_init_mode=self._enum_from_name(
                 cfg.PHASE_INIT_MODE,
                 reconstruction_payload.get("phase_init_mode"),
@@ -541,6 +550,7 @@ class MainWindow(QMainWindow):
             " | ".join(
                 (
                     f"source: {summary.measurement_source}",
+                    f"algorithm: {summary.algorithm}",
                     f"measurements: {summary.measurement_count}",
                     f"state: {summary.status}",
                     f"iterations: {summary.iterations}",

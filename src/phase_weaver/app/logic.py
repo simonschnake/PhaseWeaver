@@ -10,6 +10,7 @@ from phase_weaver.app.config import (
     CRISP_MAX_HZ,
     IR_MIN_HZ,
     IR_MAX_HZ,
+    RECONSTRUCTION_ALGORITHM,
 )
 from phase_weaver.core import (
     FormFactor,
@@ -18,6 +19,11 @@ from phase_weaver.core import (
 )
 from phase_weaver.core.constraints import (
     CenterFirstMoment,
+)
+from phase_weaver.core.crisp_reconstruction import (
+    CrispDiagnostics,
+    CrispReconstruction,
+    CrispReconstructionInput,
 )
 from phase_weaver.core.measurement import MeasuredFormFactor
 from phase_weaver.core.reconstruction import (
@@ -32,6 +38,7 @@ from .state import ControlsState, MeasurementState, ProfileModel, Reconstruction
 CRISP_FORMFACTOR_XY_KEY = (
     "XFEL.SDIAG__THZ_SPECTROMETER.FORMFACTOR__CRD.1934.TL__FORMFACTOR.XY"
 )
+CRISP_CHARGE_KEY = "XFEL.DIAG__BPM__BPMA.2218.T2__CHARGE.ALL"
 TIMESTAMP_KEY = "timestamp"
 THZ_TO_HZ = 1e12
 
@@ -40,6 +47,7 @@ THZ_TO_HZ = 1e12
 class LoadedMeasurement:
     label: str
     measured: MeasuredFormFactor
+    crisp_input: CrispReconstructionInput | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +59,7 @@ class H5MeasurementShot:
 
 @dataclass(slots=True)
 class ReconstructionSummary:
+    algorithm: str = "Gerchberg-Saxton"
     measurement_source: str = "simulated"
     measurement_count: int = 0
     iterations: int = 0
@@ -58,6 +67,7 @@ class ReconstructionSummary:
     measurement_error: float | None = None
     status: str = "not_run"
     history: ReconstructionHistory | None = None
+    crisp_diagnostics: CrispDiagnostics | None = None
 
 
 def _decode_label(value: object, fallback: str) -> str:
@@ -146,6 +156,58 @@ def _format_timestamp(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
 
 
+def _h5_shot_to_measured_formfactor(shot: np.ndarray) -> MeasuredFormFactor:
+    freq_thz = shot[:, 0]
+    formfactor_squared = shot[:, 1]
+    valid = (
+        np.isfinite(freq_thz)
+        & np.isfinite(formfactor_squared)
+        & (formfactor_squared >= 0.0)
+    )
+    if not np.any(valid):
+        raise ValueError("CRISP shot does not contain any finite non-negative points")
+
+    return MeasuredFormFactor(
+        freq=freq_thz[valid] * THZ_TO_HZ,
+        mag=np.sqrt(formfactor_squared[valid]),
+    )
+
+
+def _h5_shot_to_crisp_input(
+    shot: np.ndarray,
+    *,
+    charge_c: float,
+    shot_index: int,
+    timestamp: float,
+) -> CrispReconstructionInput:
+    freq_thz = np.asarray(shot[:, 0], dtype=float)
+    ffsq = np.asarray(shot[:, 1], dtype=float)
+    valid_freq = np.isfinite(freq_thz)
+    if not np.any(valid_freq):
+        raise ValueError("CRISP shot does not contain any finite frequencies")
+    return CrispReconstructionInput(
+        freq_hz=freq_thz[valid_freq] * THZ_TO_HZ,
+        ffsq=ffsq[valid_freq],
+        ffsq_std=np.zeros(np.count_nonzero(valid_freq), dtype=float),
+        detection_limit=np.zeros(np.count_nonzero(valid_freq), dtype=float),
+        charge_c=charge_c,
+        shot_index=shot_index,
+        timestamp=timestamp,
+    )
+
+
+def _h5_charge_c(data: h5py.File, selected_index: int) -> float:
+    if CRISP_CHARGE_KEY not in data:
+        return 250e-12
+    charge_nc = np.asarray(data[CRISP_CHARGE_KEY], dtype=float)
+    if charge_nc.ndim != 1 or selected_index >= len(charge_nc):
+        return 250e-12
+    value = float(charge_nc[selected_index])
+    if not np.isfinite(value) or value <= 0.0:
+        return 250e-12
+    return value * 1e-9
+
+
 def list_h5_measurement_shots(path: str | Path) -> tuple[H5MeasurementShot, ...]:
     path = Path(path)
     with h5py.File(path, "r") as data:
@@ -193,15 +255,19 @@ def load_measurements_h5(
             )
         shot = np.asarray(xy[selected_index], dtype=float)
         timestamp = float(timestamps[selected_index])
+        charge_c = _h5_charge_c(data, selected_index)
 
     measured_at = _format_timestamp(timestamp)
     label = f"CRISP latest {measured_at}" if shot_index is None else f"CRISP {measured_at}"
     return (
         LoadedMeasurement(
             label=label,
-            measured=MeasuredFormFactor(
-                freq=shot[:, 0] * THZ_TO_HZ,
-                mag=np.sqrt(shot[:, 1]),
+            measured=_h5_shot_to_measured_formfactor(shot),
+            crisp_input=_h5_shot_to_crisp_input(
+                shot,
+                charge_c=charge_c,
+                shot_index=selected_index,
+                timestamp=timestamp,
             ),
         ),
     )
@@ -262,6 +328,30 @@ class AppLogic:
         ff_input: FormFactor | None,
         measurement_source: str = "simulated",
     ) -> tuple[Profile, FormFactor, ReconstructionSummary]:
+        algorithm = controls_state.reconstruction.algorithm
+        if algorithm == RECONSTRUCTION_ALGORITHM.CRISP:
+            crisp_input = self._active_crisp_input(
+                measurements,
+                controls_state,
+                measurement_source=measurement_source,
+            )
+            reconstruction = CrispReconstruction(crisp_input)
+            result = reconstruction.run()
+
+            summary = ReconstructionSummary(
+                algorithm=algorithm.value,
+                measurement_source=measurement_source,
+                measurement_count=len(measurements),
+                iterations=result.diagnostics.num_iterations,
+                stop_reason=result.stop_reason,
+                measurement_error=None,
+                status="finished",
+                crisp_diagnostics=result.diagnostics,
+            )
+            self.phase_last = result.form_factor.phase.copy()
+            self.reconstruction_summary = summary
+            return result.profile, result.form_factor, summary
+
         reconstruction = GerchbergSaxton(
             grid=grid,
             measurements=measurements,
@@ -274,6 +364,7 @@ class AppLogic:
 
         self.phase_last = ff_recon.phase.copy()
         summary = ReconstructionSummary(
+            algorithm=algorithm.value,
             measurement_source=measurement_source,
             measurement_count=len(measurements),
             iterations=reconstruction.last_iterations,
@@ -284,6 +375,31 @@ class AppLogic:
         )
         self.reconstruction_summary = summary
         return prof_recon, ff_recon, summary
+
+    def _active_crisp_input(
+        self,
+        measurements: tuple[MeasuredFormFactor, ...],
+        controls_state: ControlsState,
+        *,
+        measurement_source: str,
+    ) -> CrispReconstructionInput:
+        if measurement_source == "loaded":
+            for item in self.loaded_measurements:
+                if item.crisp_input is not None:
+                    return item.crisp_input
+
+        if not measurements:
+            raise ValueError("CRISP reconstruction requires at least one measurement")
+
+        measured = measurements[0]
+        positive = measured.freq > 0.0
+        return CrispReconstructionInput(
+            freq_hz=measured.freq[positive],
+            ffsq=np.square(measured.mag[positive]),
+            ffsq_std=np.zeros(np.count_nonzero(positive), dtype=float),
+            detection_limit=np.zeros(np.count_nonzero(positive), dtype=float),
+            charge_c=controls_state.scenario.charge,
+        )
 
     def compute_input_profile(self, app_state: ControlsState) -> Profile:
         profile_model = ProfileModel(app_state.scenario)
@@ -412,6 +528,7 @@ class AppLogic:
             "phase_input": spectrum_model.phase_input_ui
             if spectrum_model is not None
             else np.array([]),
+            "reconstruction_algorithm": np.array(summary.algorithm),
             "measurement_source": np.array(summary.measurement_source),
             "measurement_count": np.array(summary.measurement_count),
             "reconstruction_status": np.array(summary.status),
@@ -425,6 +542,8 @@ class AppLogic:
         }
         if summary.history is not None:
             payload.update(summary.history.as_arrays())
+        if summary.crisp_diagnostics is not None:
+            payload.update(self._crisp_diagnostics_payload(summary.crisp_diagnostics))
 
         if controls_state is not None:
             payload.update(self._state_payload(controls_state))
@@ -436,10 +555,42 @@ class AppLogic:
 
         np.savez(file=path, **payload)
 
+    def _crisp_diagnostics_payload(
+        self, diagnostics: CrispDiagnostics
+    ) -> dict[str, np.ndarray]:
+        payload: dict[str, np.ndarray] = {
+            "crisp_kramers_kronig_profile": diagnostics.kramers_kronig_profile,
+            "crisp_kramers_kronig_phase": diagnostics.kramers_kronig_phase,
+            "crisp_intermediate_frequencies_thz": (
+                diagnostics.intermediate_frequencies_thz
+            ),
+            "crisp_intermediate_ffsq": diagnostics.intermediate_ffsq,
+            "crisp_interpolated_frequencies_thz": (
+                diagnostics.interpolated_frequencies_thz
+            ),
+            "crisp_interpolated_ffabs": diagnostics.interpolated_ffabs,
+            "crisp_num_input_points": np.array(diagnostics.num_input_points),
+            "crisp_num_filtered_input_points": np.array(
+                diagnostics.num_filtered_input_points
+            ),
+            "crisp_max_input_frequency_thz": np.array(
+                diagnostics.max_input_frequency_thz
+            ),
+            "crisp_num_iterations": np.array(diagnostics.num_iterations),
+            "crisp_peak_current_a": np.array(diagnostics.peak_current_a),
+            "crisp_fwhm_fs": np.array(diagnostics.fwhm_fs),
+            "crisp_rms_width_fs": np.array(diagnostics.rms_width_fs),
+            "crisp_skewness": np.array(diagnostics.skewness),
+        }
+        for i, profile in enumerate(diagnostics.iteration_profiles, start=1):
+            payload[f"crisp_current_profile_{i}"] = profile
+        return payload
+
     def _state_payload(self, controls_state: ControlsState) -> dict[str, np.ndarray]:
         scenario = controls_state.scenario
         reconstruction = controls_state.reconstruction
         payload: dict[str, np.ndarray] = {
+            "reconstruction_algorithm": np.array(reconstruction.algorithm.value),
             "phase_init_mode": np.array(reconstruction.phase_init_mode.value),
             "reconstruction_time_constraints": np.array(
                 sorted(option.value for option in reconstruction.time_constraints)

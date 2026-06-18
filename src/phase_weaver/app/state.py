@@ -8,12 +8,15 @@ from .config import (
     CHARGE_C,
     DT,
     PHASE_INIT_MODE,
+    RECONSTRUCTION_ALGORITHM,
+    RECONSTRUCTION_ALGORITHM_DEFAULT,
     RECON_FREQUENCY_CONSTRAINT,
     RECON_FREQUENCY_CONSTRAINT_DEFAULT,
     RECON_STOP_CONDITION,
     RECON_STOP_CONDITION_DEFAULT,
     RECON_TIME_CONSTRAINT,
     RECON_TIME_CONSTRAINT_DEFAULT,
+    PHASE_INIT_DEFAULT,
     T_MAX,
 )
 
@@ -117,7 +120,8 @@ class ProfileModel:
 
 @dataclass(slots=True)
 class ReconstructionState:
-    phase_init_mode: PHASE_INIT_MODE
+    algorithm: RECONSTRUCTION_ALGORITHM = RECONSTRUCTION_ALGORITHM_DEFAULT
+    phase_init_mode: PHASE_INIT_MODE = PHASE_INIT_DEFAULT
     time_constraints: set[RECON_TIME_CONSTRAINT] = field(
         default_factory=lambda: set(RECON_TIME_CONSTRAINT_DEFAULT)
     )

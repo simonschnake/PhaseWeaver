@@ -19,6 +19,40 @@ def _plot_inputs():
     return profile, formfactor
 
 
+def _view_ranges(panel):
+    return {
+        "time": panel.canvas.time_plot.getViewBox().viewRange(),
+        "spectrum": panel.canvas.spectrum_plot.getViewBox().viewRange(),
+        "phase": panel.canvas.phase_view.viewRange(),
+    }
+
+
+def _assert_view_ranges_equal(actual, expected):
+    for key in expected:
+        for actual_axis, expected_axis in zip(actual[key], expected[key]):
+            np.testing.assert_allclose(actual_axis, expected_axis)
+
+
+def _set_manual_axis_ranges(panel):
+    panel.canvas.time_plot.getViewBox().setRange(
+        xRange=(-1.1e-13, 1.3e-13),
+        yRange=(2.0, 1800.0),
+        padding=0.0,
+        disableAutoRange=True,
+    )
+    panel.canvas.spectrum_plot.getViewBox().setRange(
+        xRange=(15e12, 95e12),
+        yRange=(-9.0, -0.05),
+        padding=0.0,
+        disableAutoRange=True,
+    )
+    panel.canvas.phase_view.setRange(
+        yRange=(-2.2, 2.4),
+        padding=0.0,
+        disableAutoRange=True,
+    )
+
+
 def test_plot_panel_initializes_without_matplotlib():
     app = _app()
 
@@ -173,3 +207,50 @@ def test_plot_panel_theme_switch_keeps_items():
 
     assert panel.line_current is not None
     assert panel.line_mag is not None
+
+
+def test_plot_panel_preserves_manual_axis_ranges_when_input_changes():
+    _app()
+    panel = PlotPanel()
+    profile, formfactor = _plot_inputs()
+    changed_profile = ProfileModel(
+        ProfileModelState(charge=profile.charge * 1.5)
+    ).compute_profile()
+    changed_formfactor = changed_profile.to_form_factor()
+
+    panel.render_input(profile, formfactor)
+    _set_manual_axis_ranges(panel)
+    expected = _view_ranges(panel)
+
+    panel.render_input(changed_profile, changed_formfactor)
+
+    _assert_view_ranges_equal(_view_ranges(panel), expected)
+
+
+def test_plot_panel_preserves_manual_axis_ranges_when_reconstruction_changes():
+    _app()
+    panel = PlotPanel()
+    profile, formfactor = _plot_inputs()
+    panel.render_input(profile, formfactor)
+    _set_manual_axis_ranges(panel)
+    expected = _view_ranges(panel)
+
+    panel.render_reconstruction(profile, formfactor)
+    _assert_view_ranges_equal(_view_ranges(panel), expected)
+
+    panel.clear_reconstruction()
+    _assert_view_ranges_equal(_view_ranges(panel), expected)
+
+
+def test_plot_panel_preserves_manual_axis_ranges_when_plot_controls_change():
+    _app()
+    panel = PlotPanel()
+    profile, formfactor = _plot_inputs()
+    panel.render_input(profile, formfactor)
+    panel.render_reconstruction(profile, formfactor)
+    _set_manual_axis_ranges(panel)
+    expected = _view_ranges(panel)
+
+    panel.plot_controls.line_actions[PLOT_LINE_MODE.CURRENT_INPUT].setChecked(False)
+
+    _assert_view_ranges_equal(_view_ranges(panel), expected)
