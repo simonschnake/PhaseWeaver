@@ -122,6 +122,9 @@ class ProfileModel:
 class ReconstructionState:
     algorithm: RECONSTRUCTION_ALGORITHM = RECONSTRUCTION_ALGORITHM_DEFAULT
     phase_init_mode: PHASE_INIT_MODE = PHASE_INIT_DEFAULT
+    use_ir_relative_constraint: bool = False
+    use_fixed_ir_scale: bool = False
+    fixed_ir_scale: float = 1.0
     time_constraints: set[RECON_TIME_CONSTRAINT] = field(
         default_factory=lambda: set(RECON_TIME_CONSTRAINT_DEFAULT)
     )

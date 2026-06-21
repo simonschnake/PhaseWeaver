@@ -2,7 +2,7 @@ import numpy as np
 from PySide6.QtWidgets import QApplication
 
 from phase_weaver.app.config import PLOT_LINE_MODE
-from phase_weaver.app.logic import LoadedMeasurement
+from phase_weaver.app.logic import LoadedMeasurement, ReferenceCurrentProfile
 from phase_weaver.app.state import ProfileModel, ProfileModelState
 from phase_weaver.app.ui.plot_panel import PlotPanel
 from phase_weaver.core.measurement import MeasuredFormFactor
@@ -73,6 +73,12 @@ def test_plot_panel_render_methods_run():
             freq=np.array([10e12, 20e12]),
             mag=np.array([0.9, 0.7]),
         ),
+        reference_current=ReferenceCurrentProfile(
+            label="CRISP SA1",
+            time_s=np.array([-1e-15, 0.0, 1e-15]),
+            current_a=np.array([0.0, 10.0, 0.0]),
+            inferred_max_frequency_thz=250.0,
+        ),
     )
 
     panel.render_input(profile, formfactor)
@@ -86,6 +92,10 @@ def test_plot_panel_render_methods_run():
     measurement_x, measurement_y = panel.measurement_lines[0].getOriginalDataset()
     np.testing.assert_allclose(measurement_x, [10e12, 20e12])
     np.testing.assert_allclose(measurement_y, [0.9, 0.7])
+    reference_x, reference_y = panel.line_reference_current.getOriginalDataset()
+    np.testing.assert_allclose(reference_x, [-1e-15, 0.0, 1e-15])
+    np.testing.assert_allclose(reference_y, [0.0, 10.0, 0.0])
+    assert "CRISP SA1" in panel.canvas.time_legend.labels
 
 
 def test_plot_panel_uses_si_units_as_plot_data():
@@ -134,16 +144,33 @@ def test_plot_panel_line_visibility_follows_controls():
     profile, formfactor = _plot_inputs()
     panel.render_input(profile, formfactor)
     panel.render_reconstruction(profile, formfactor)
+    panel.render_measurements(
+        (
+            LoadedMeasurement(
+                label="measurement",
+                measured=MeasuredFormFactor(freq=np.array([10e12]), mag=np.array([0.9])),
+                reference_current=ReferenceCurrentProfile(
+                    label="CRISP SA1",
+                    time_s=np.array([0.0]),
+                    current_a=np.array([1.0]),
+                    inferred_max_frequency_thz=250.0,
+                ),
+            ),
+        )
+    )
 
     panel.plot_controls.line_actions[PLOT_LINE_MODE.CURRENT_INPUT].setChecked(False)
+    panel.plot_controls.line_actions[PLOT_LINE_MODE.CURRENT_REFERENCE].setChecked(False)
     panel.plot_controls.line_actions[PLOT_LINE_MODE.PHASE_RECON].setChecked(False)
 
     assert not panel.line_current.isVisible()
+    assert not panel.line_reference_current.isVisible()
     assert not panel.line_phase_recon.isVisible()
 
     panel.plot_controls.show_all_lines()
 
     assert panel.line_current.isVisible()
+    assert panel.line_reference_current.isVisible()
     assert panel.line_phase_recon.isVisible()
 
 

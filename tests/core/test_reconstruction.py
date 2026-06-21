@@ -245,6 +245,89 @@ def test_gerchberg_saxton_uses_selected_reconstruction_options(grid: Grid):
     assert [type(c).__name__ for c in alg.stop._criteria] == ["MaxIter"]
 
 
+def test_gerchberg_saxton_adds_relative_shape_constraint(grid: Grid):
+    measured = MeasuredFormFactor(
+        freq=grid.f_pos[:20],
+        mag=np.linspace(1.0, 0.7, 20),
+    )
+    relative = MeasuredFormFactor(
+        freq=grid.f_pos[30:50],
+        mag=np.linspace(0.2, 1.0, 20),
+    )
+    state = ReconstructionState(
+        phase_init_mode=PHASE_INIT_MODE.ZERO,
+        frequency_constraints={RECON_FREQUENCY_CONSTRAINT.BLEND_MEASURED},
+        stop_conditions={RECON_STOP_CONDITION.MAX_ITER},
+    )
+
+    alg = GerchbergSaxton(
+        grid=grid,
+        measurements=(measured,),
+        relative_measurements=(relative,),
+        reconstruction_state=state,
+    )
+
+    assert [type(c).__name__ for c in alg.frequency_constraints._constraints] == [
+        "BlendMeasuredMagnitude",
+        "BlendRelativeMeasuredShape",
+    ]
+    assert alg.relative_measurements == (relative,)
+
+
+def test_relative_measurements_extend_high_frequency_decay_bounds(grid: Grid):
+    measured = MeasuredFormFactor(
+        freq=grid.f_pos[1:10],
+        mag=np.linspace(1.0, 0.7, 9),
+    )
+    relative = MeasuredFormFactor(
+        freq=grid.f_pos[20:30],
+        mag=np.linspace(0.2, 1.0, 10),
+    )
+    state = ReconstructionState(
+        phase_init_mode=PHASE_INIT_MODE.ZERO,
+        frequency_constraints={
+            RECON_FREQUENCY_CONSTRAINT.HIGH_FREQ_DECAY,
+            RECON_FREQUENCY_CONSTRAINT.BLEND_MEASURED,
+        },
+        stop_conditions={RECON_STOP_CONDITION.MAX_ITER},
+    )
+
+    alg = GerchbergSaxton(
+        grid=grid,
+        measurements=(measured,),
+        relative_measurements=(relative,),
+        reconstruction_state=state,
+    )
+
+    decay = alg.frequency_constraints._constraints[0]
+    assert type(decay).__name__ == "HighFrequencyMagnitudeDecay"
+    assert decay.start_freq == relative.freq[-1]
+
+
+def test_relative_measurements_do_not_enter_calibrated_error(grid: Grid):
+    measured = MeasuredFormFactor(
+        freq=grid.f_pos,
+        mag=np.linspace(1.0, 0.5, len(grid.f_pos)),
+    )
+    relative = MeasuredFormFactor(
+        freq=grid.f_pos[10:30],
+        mag=np.linspace(100.0, 200.0, 20),
+    )
+    alg = GerchbergSaxton(
+        grid=grid,
+        measurements=(measured,),
+        relative_measurements=(relative,),
+        reconstruction_state=SimpleNamespace(phase_init_mode=PHASE_INIT_MODE.ZERO),
+    )
+    ff = FormFactor(
+        grid=grid,
+        mag=measured.mag.copy(),
+        phase=np.zeros_like(measured.mag),
+    )
+
+    assert alg._measurement_error(ff) == pytest.approx(0.0)
+
+
 def test_empty_stop_selection_falls_back_to_max_iter(grid: Grid):
     measured = MeasuredFormFactor(
         freq=grid.f_pos,
@@ -290,6 +373,28 @@ def test_gerchberg_saxton_last_phase_initialization_uses_previous_phase(grid: Gr
     )
 
     assert_allclose(alg.formfactor_init.phase, phase_last)
+
+
+def test_gerchberg_saxton_can_initialize_magnitude_from_input_formfactor(grid: Grid):
+    measured = MeasuredFormFactor(
+        freq=grid.f_pos[1:10],
+        mag=np.linspace(1.0, 0.2, 9),
+    )
+    input_mag = np.linspace(1.0, 0.01, len(grid.f_pos))
+    input_phase = np.linspace(-0.5, 0.5, len(grid.f_pos))
+    input_ff = FormFactor(grid=grid, mag=input_mag, phase=input_phase)
+
+    alg = GerchbergSaxton(
+        grid=grid,
+        measurements=(measured,),
+        reconstruction_state=SimpleNamespace(phase_init_mode=PHASE_INIT_MODE.LAST),
+        formfactor_input=input_ff,
+        phase_last=input_phase,
+        use_formfactor_input_magnitude=True,
+    )
+
+    assert_allclose(alg.formfactor_init.mag, input_mag)
+    assert_allclose(alg.formfactor_init.phase, input_phase)
 
 
 def test_gerchberg_saxton_last_phase_initialization_falls_back_without_phase(

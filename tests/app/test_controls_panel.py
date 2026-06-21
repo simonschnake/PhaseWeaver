@@ -107,6 +107,9 @@ def test_reconstruction_panel_provides_measurement_and_reconstruction_state():
 
     assert measurement_state.crisp is False
     assert measurement_state.infrared is False
+    assert reconstruction_state.use_ir_relative_constraint is False
+    assert reconstruction_state.use_fixed_ir_scale is False
+    assert reconstruction_state.fixed_ir_scale == 1.0
     assert reconstruction_state.phase_init_mode == panel.phase_init_box.mode
     assert reconstruction_state.time_constraints == set(
         panel.time_constraint_box.selected_modes
@@ -124,6 +127,9 @@ def test_reconstruction_panel_restores_reconstruction_state():
     panel = ReconstructionPanel()
     reconstruction_state = ReconstructionState(
         phase_init_mode=cfg.PHASE_INIT_MODE.LAST,
+        use_ir_relative_constraint=True,
+        use_fixed_ir_scale=True,
+        fixed_ir_scale=2.5,
         time_constraints={cfg.RECON_TIME_CONSTRAINT.CENTER},
         frequency_constraints={cfg.RECON_FREQUENCY_CONSTRAINT.ENFORCE_DC},
         stop_conditions={cfg.RECON_STOP_CONDITION.MAX_ITER},
@@ -138,7 +144,24 @@ def test_reconstruction_panel_restores_reconstruction_state():
     assert panel.get_measurement_state().crisp is True
     assert panel.get_measurement_state().infrared is False
     assert panel.get_reconstruction_state() == reconstruction_state
+    assert panel.ir_relative_constraint_box.text() == "Use IR as relative constraint"
+    assert panel.fixed_ir_scale_box.text() == "Use fixed IR scale"
     assert panel.is_auto_reconstruction_enabled() is False
+
+
+def test_reconstruction_panel_ir_scale_slider_and_spinbox_stay_synced():
+    _app()
+    panel = ReconstructionPanel()
+
+    panel.ir_scale_slider.setValue(1000)
+
+    assert panel.ir_scale_spin.value() == pytest.approx(10.0)
+    assert panel.get_reconstruction_state().fixed_ir_scale == pytest.approx(10.0)
+
+    panel.ir_scale_spin.setValue(0.1)
+
+    assert panel.ir_scale_slider.value() == -1000
+    assert panel.get_reconstruction_state().fixed_ir_scale == pytest.approx(0.1)
 
 
 def test_main_window_exposes_file_actions_in_file_menu():
@@ -148,6 +171,7 @@ def test_main_window_exposes_file_actions_in_file_menu():
     assert window.file_menu.title() == "File"
     assert [action.text() for action in window.file_menu.actions()] == [
         "Load Measurements...",
+        "Load IR Measurement...",
         "Export Data...",
     ]
 

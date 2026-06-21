@@ -153,6 +153,10 @@ class MainWindow(QMainWindow):
         load_measurements_action.triggered.connect(self.load_measurements_requested)
         self.file_menu.addAction(load_measurements_action)
 
+        load_ir_measurement_action = QAction("Load IR Measurement...", self)
+        load_ir_measurement_action.triggered.connect(self.load_ir_measurement_requested)
+        self.file_menu.addAction(load_ir_measurement_action)
+
         export_action = QAction("Export Data...", self)
         export_action.triggered.connect(self.export_requested)
         self.file_menu.addAction(export_action)
@@ -326,6 +330,25 @@ class MainWindow(QMainWindow):
         self._remember_path(path, LAST_MEASUREMENT_PATH_KEY)
         self.schedule_updates()
 
+    def load_ir_measurement_requested(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load IR measurement",
+            self._dialog_start_path(LAST_MEASUREMENT_PATH_KEY),
+            "IR measurement files (*.npz);;NumPy archive (*.npz)",
+        )
+        if not path:
+            return
+
+        try:
+            self.logic.replace_loaded_ocean_measurements(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Could not load IR measurement", str(exc))
+            return
+
+        self._remember_path(path, LAST_MEASUREMENT_PATH_KEY)
+        self.schedule_updates()
+
     def export_requested(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
             self,
@@ -417,6 +440,11 @@ class MainWindow(QMainWindow):
             "reconstruction": {
                 "algorithm": state.reconstruction.algorithm.name,
                 "phase_init_mode": state.reconstruction.phase_init_mode.name,
+                "use_ir_relative_constraint": (
+                    state.reconstruction.use_ir_relative_constraint
+                ),
+                "use_fixed_ir_scale": state.reconstruction.use_fixed_ir_scale,
+                "fixed_ir_scale": state.reconstruction.fixed_ir_scale,
                 "time_constraints": sorted(
                     mode.name for mode in state.reconstruction.time_constraints
                 ),
@@ -469,6 +497,13 @@ class MainWindow(QMainWindow):
                 reconstruction_payload.get("phase_init_mode"),
                 cfg.PHASE_INIT_DEFAULT,
             ),
+            use_ir_relative_constraint=bool(
+                reconstruction_payload.get("use_ir_relative_constraint", False)
+            ),
+            use_fixed_ir_scale=bool(
+                reconstruction_payload.get("use_fixed_ir_scale", False)
+            ),
+            fixed_ir_scale=float(reconstruction_payload.get("fixed_ir_scale", 1.0)),
             time_constraints=self._enum_set_from_names(
                 cfg.RECON_TIME_CONSTRAINT,
                 reconstruction_payload.get("time_constraints"),
@@ -552,6 +587,9 @@ class MainWindow(QMainWindow):
                     f"source: {summary.measurement_source}",
                     f"algorithm: {summary.algorithm}",
                     f"measurements: {summary.measurement_count}",
+                    f"relative IR: {summary.relative_measurement_count}"
+                    if summary.ir_relative_constraint_used
+                    else "relative IR: off",
                     f"state: {summary.status}",
                     f"iterations: {summary.iterations}",
                     f"stop: {summary.stop_reason}",

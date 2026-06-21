@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from scipy.optimize import minimize_scalar
@@ -49,6 +49,7 @@ class CrispReconstructionInput:
     ffsq_std: np.ndarray | None = None
     detection_limit: np.ndarray | None = None
     charge_c: float = 250e-12
+    max_frequency_thz: float | None = None
     shot_index: int | None = None
     timestamp: float | None = None
 
@@ -361,6 +362,8 @@ class CrispReconstruction:
         config: CrispReconstructionConfig = CrispReconstructionConfig(),
     ) -> None:
         self.data = data
+        if data.max_frequency_thz is not None:
+            config = replace(config, max_frequency_thz=data.max_frequency_thz)
         self.config = config
         self.last_iterations = 0
         self.last_stop_reason = "not_run"

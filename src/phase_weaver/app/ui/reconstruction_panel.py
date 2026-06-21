@@ -1,7 +1,17 @@
 from typing import cast
+import math
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
+from PySide6.QtCore import Signal, Qt
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDoubleSpinBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
 
 import phase_weaver.app.config as cfg
 
@@ -13,9 +23,12 @@ class ReconstructionPanel(QWidget):
     changed = Signal()
     reconstruction_requested = Signal()
     reconstruction_auto_toggled = Signal(bool)
+    IR_SCALE_SLIDER_MIN = -2000
+    IR_SCALE_SLIDER_MAX = 2000
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._syncing_ir_scale = False
 
         self.algorithm_box = OptionSelectorBox(
             "Algorithm",
@@ -47,6 +60,25 @@ class ReconstructionPanel(QWidget):
             enum_cls=cfg.RECON_STOP_CONDITION,
             default=set(cfg.RECON_STOP_CONDITION_DEFAULT),
         )
+        self.ir_relative_constraint_box = QCheckBox("Use IR as relative constraint")
+        self.ir_relative_constraint_box.setChecked(False)
+        self.ir_relative_constraint_box.toggled.connect(lambda _checked: self.changed.emit())
+        self.fixed_ir_scale_box = QCheckBox("Use fixed IR scale")
+        self.fixed_ir_scale_box.setChecked(False)
+        self.fixed_ir_scale_box.toggled.connect(lambda _checked: self.changed.emit())
+        self.ir_scale_spin = QDoubleSpinBox()
+        self.ir_scale_spin.setRange(0.0, 1e6)
+        self.ir_scale_spin.setDecimals(6)
+        self.ir_scale_spin.setSingleStep(0.1)
+        self.ir_scale_spin.setValue(1.0)
+        self.ir_scale_spin.valueChanged.connect(self._ir_scale_spin_changed)
+        self.ir_scale_slider = QSlider(Qt.Orientation.Horizontal)
+        self.ir_scale_slider.setRange(
+            self.IR_SCALE_SLIDER_MIN,
+            self.IR_SCALE_SLIDER_MAX,
+        )
+        self.ir_scale_slider.setValue(self._scale_to_slider(1.0))
+        self.ir_scale_slider.valueChanged.connect(self._ir_scale_slider_changed)
 
         # self.band_limit_box = BandLimitBox()
 
@@ -70,6 +102,13 @@ class ReconstructionPanel(QWidget):
         layout.addWidget(self.time_constraint_box)
         layout.addWidget(self.frequency_constraint_box)
         layout.addWidget(self.stop_condition_box)
+        layout.addWidget(self.ir_relative_constraint_box)
+        layout.addWidget(self.fixed_ir_scale_box)
+        ir_scale_layout = QHBoxLayout()
+        ir_scale_layout.addWidget(QLabel("IR scale"))
+        ir_scale_layout.addWidget(self.ir_scale_slider, 1)
+        ir_scale_layout.addWidget(self.ir_scale_spin)
+        layout.addLayout(ir_scale_layout)
         # layout.addWidget(self.band_limit_box)
 
         self.auto_reconstruct_button = QPushButton("Auto Reconstruction: On")
@@ -100,6 +139,9 @@ class ReconstructionPanel(QWidget):
                 self.algorithm_box.mode,
             ),
             phase_init_mode=cast(cfg.PHASE_INIT_MODE, self.phase_init_box.mode),
+            use_ir_relative_constraint=self.ir_relative_constraint_box.isChecked(),
+            use_fixed_ir_scale=self.fixed_ir_scale_box.isChecked(),
+            fixed_ir_scale=self.ir_scale_spin.value(),
             time_constraints=cast(
                 set[cfg.RECON_TIME_CONSTRAINT],
                 set(self.time_constraint_box.selected_modes),
@@ -119,6 +161,10 @@ class ReconstructionPanel(QWidget):
     def set_reconstruction_state(self, state: ReconstructionState) -> None:
         self.algorithm_box.mode = state.algorithm
         self.phase_init_box.mode = state.phase_init_mode
+        self.ir_relative_constraint_box.setChecked(state.use_ir_relative_constraint)
+        self.fixed_ir_scale_box.setChecked(state.use_fixed_ir_scale)
+        self.ir_scale_spin.setValue(state.fixed_ir_scale)
+        self.ir_scale_slider.setValue(self._scale_to_slider(state.fixed_ir_scale))
         self.time_constraint_box.selected_modes = set(state.time_constraints)
         self.frequency_constraint_box.selected_modes = set(
             state.frequency_constraints
@@ -153,3 +199,32 @@ class ReconstructionPanel(QWidget):
         self.auto_reconstruct_button.setText(
             "Auto Reconstruction: On" if enabled else "Auto Reconstruction: Off"
         )
+
+    def _ir_scale_slider_changed(self, value: int) -> None:
+        if self._syncing_ir_scale:
+            return
+        self._syncing_ir_scale = True
+        self.ir_scale_spin.setValue(self._slider_to_scale(value))
+        self._syncing_ir_scale = False
+        self.changed.emit()
+
+    def _ir_scale_spin_changed(self, value: float) -> None:
+        if self._syncing_ir_scale:
+            return
+        self._syncing_ir_scale = True
+        self.ir_scale_slider.setValue(self._scale_to_slider(value))
+        self._syncing_ir_scale = False
+        self.changed.emit()
+
+    def _scale_to_slider(self, value: float) -> int:
+        if value <= 0.0:
+            return self.IR_SCALE_SLIDER_MIN
+        return int(
+            min(
+                self.IR_SCALE_SLIDER_MAX,
+                max(self.IR_SCALE_SLIDER_MIN, round(1000.0 * math.log10(value))),
+            )
+        )
+
+    def _slider_to_scale(self, value: int) -> float:
+        return 10.0 ** (value / 1000.0)

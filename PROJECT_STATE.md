@@ -1,6 +1,6 @@
 # PhaseWeaver Project State
 
-Last updated: 2026-06-18
+Last updated: 2026-06-21
 
 ## Executive Summary
 
@@ -14,10 +14,25 @@ first CRISP path:
   available recording.
 - Latest-shot selection by timestamp, with explicit shot-index support in the
   loader.
+- GUI shot selection for multi-shot HDF5 files, defaulting to the latest shot.
 - Conversion of CRISP form-factor-squared values to `MeasuredFormFactor`
   magnitudes for plotting and generic reconstruction.
-- Preservation of the original CRISP `|F|^2` values, shot index, timestamp, and
-  charge for CRISP-style reconstruction.
+- Preservation of the original CRISP `|F|^2` values, standard deviation,
+  detection limit, shot index, timestamp, and charge for CRISP-style
+  reconstruction.
+- Use of CRISP reconstruction input arrays when present: `INPUT_FFSQ`,
+  `INPUT_FFSQ_STD`, and `INPUT_FFSQ_DETECTION_LIMIT`.
+- Loading of the upstream SA1 `CURRENT_PROFILE` from HDF5 as a reference current
+  overlay for direct comparison with PhaseWeaver's CRISP reconstruction.
+- Loading of Ocean/NIR `SPECTRUM` data from HDF5 as a relative high-frequency
+  `|F|` overlay, excluded from normal reconstruction by default.
+- Optional extended reconstruction mode where loaded Ocean/NIR data is used as a
+  relative high-frequency shape constraint while CRISP remains the calibrated
+  measurement and error source. This works for Gerchberg-Saxton directly and as
+  a CRISP-seeded `CRISP + IR` extension.
+- IR relative-shape scaling can be automatic, matching the average
+  reconstructed `|F|` over the IR band, or fixed by a user-controlled scale
+  factor with a live log slider.
 - A `CRISP` reconstruction algorithm option beside `Gerchberg-Saxton`.
 - A Python implementation of the upstream CRISP reconstruction flow, including
   input filtering, low/high-frequency Gaussian extrapolation, Savitzky-Golay
@@ -55,8 +70,9 @@ The intended data interpretation is:
   input because that is what the upstream algorithm expects.
 - Ocean/NIR spectra are wavelength/intensity data in arbitrary units. They
   should not be presented as absolute form factor without a measured response
-  calibration. The first useful role is a relative high-frequency shape
-  constraint.
+  calibration. Their current reconstruction role is opt-in relative
+  high-frequency shape guidance, either average-matched to the reconstructed IR
+  band level or multiplied by a fixed user-selected scale.
 
 ## What The App Does Today
 
@@ -65,7 +81,8 @@ The active GUI remains a focused plotting workbench:
 - Main view: time-domain current/profile plot and frequency-domain
   magnitude/phase plot.
 - `File > Load Measurements...`: loads `.npz`, `.h5`, and `.hdf5` measurement
-  files.
+  files, including CRISP form-factor data and Ocean/NIR spectra from HDF5 when
+  available.
 - `File > Export Data...`: writes plot arrays, loaded measurement arrays,
   profile/reconstruction settings, reconstruction summary, and CRISP diagnostics
   when available.
@@ -73,9 +90,10 @@ The active GUI remains a focused plotting workbench:
   generator.
 - `View > Reconstruction Setup`: opens algorithm selection, phase init,
   simulated CRISP/IR fallback selectors, constraints, stop conditions, auto
-  reconstruction, and run controls.
-- Status summary: source, algorithm, measurement count, run state, iterations,
-  stop reason, and final Gerchberg-Saxton measurement error when applicable.
+  reconstruction, IR relative-constraint controls, and run controls.
+- Status summary: source, algorithm, calibrated measurement count, relative IR
+  constraint state, run state, iterations, stop reason, and final
+  Gerchberg-Saxton measurement error when applicable.
 
 The reconstruction workflow is now:
 
@@ -84,14 +102,17 @@ The reconstruction workflow is now:
    measurements.
 3. Optionally load `.npz` or CRISP HDF5 measurements.
 4. Pick `Gerchberg-Saxton` or `CRISP`.
-5. Run reconstruction from the active measurement set.
-6. Render the reconstructed current/profile and form factor.
-7. Export the run with enough metadata to inspect it later.
+5. Optionally enable `Use IR as relative constraint` for Gerchberg-Saxton or
+   CRISP.
+6. Run reconstruction from the active calibrated measurement set, with optional
+   relative IR shape guidance.
+7. Render the reconstructed current/profile and form factor.
+8. Export the run with enough metadata to inspect it later.
 
 ## Current Repository Snapshot
 
 - Branch: `main`
-- Package version: `0.5.0`
+- Package version: `0.6.0`
 - Python package layout: `src/phase_weaver`
 - GUI framework: PySide6
 - Plotting: pyqtgraph
@@ -111,9 +132,38 @@ Current notable local changes before this state update:
 - UI/state updates for algorithm selection and persistence.
 - Plot model/panel fixes so reconstruction data may live on a different grid
   than the input model, and manual axis ranges survive refreshes.
+- GUI shot selection for multi-shot CRISP HDF5 recordings.
+- CRISP HDF5 reconstruction inputs now use `INPUT_FFSQ`, `INPUT_FFSQ_STD`, and
+  `INPUT_FFSQ_DETECTION_LIMIT` when those datasets are available, while keeping
+  older files compatible.
+- CRISP HDF5 SA1 current profiles now load as reference overlays and export with
+  the measurement metadata when available. Their time axis is inferred from
+  `charge = sum(current) * dt`, which also recovers the upstream reconstruction
+  maximum frequency for loaded CRISP reconstructions.
+- Ocean/NIR HDF5 spectra now load as `Ocean NIR relative |F|` overlays with
+  relative-shape metadata. They remain excluded from normal reconstruction by
+  default, but can be used as an explicit opt-in relative-shape constraint.
+- Waterflow NPZ dumps now load `average` as an Ocean/NIR relative `|F|` overlay.
+  The file's `background` is treated as contextual raw baseline data; it is not
+  subtracted because `average` is already background-corrected in the current
+  test dump.
+- Cor2d NPZ dumps now load the mean of `spec_hist` over the `phen_scale`
+  wavelength axis as an Ocean/NIR relative `|F|` overlay.
+- `File > Load IR Measurement...` can replace only loaded Ocean/NIR overlays,
+  preserving the loaded CRISP HDF5 data, CRISP reconstruction input, charge,
+  shot metadata, and SA1 reference current profile.
+- `Use IR as relative constraint` in the reconstruction setup enables an
+  opt-in relative-shape constraint from loaded Ocean/NIR data. For
+  Gerchberg-Saxton it is part of the normal iteration. For the CRISP algorithm,
+  the app first runs the upstream-style CRISP reconstruction and then runs a
+  CRISP-seeded `CRISP + IR` extension. Normal CRISP-only reconstruction remains
+  unchanged when the toggle is off.
+- `Use fixed IR scale` switches IR scaling from automatic band-average matching
+  to a fixed user-selected multiplier. The companion `IR scale` control has a
+  log slider for interactive sweeps and a numeric spinbox for exact values.
 - `notebooks/scratch.ipynb` removed from the working tree.
 - Optional reference-HDF5 comparison test that uses
-  `2026.06.17_10.48.04.h5` only when that local recording is available; the
+  local CRISP HDF5 recordings only when available; the
   recording itself is sample data and is not part of the committed project
   state.
 
@@ -141,15 +191,19 @@ upstream server:
 
 Known differences and caveats:
 
-- HDF5 loading currently uses zero standard deviation and zero detection limit
-  unless matching datasets are added to the loader.
+- HDF5 loading falls back to zero standard deviation and zero detection limit
+  for older recordings that do not contain the CRISP reconstruction input
+  datasets.
 - The Python port is covered by synthetic tests and one optional reference-HDF5
   comparison, but it should still be validated against more upstream/reference
   cases.
 - The generic app measurement abstraction stores magnitudes, while CRISP
   diagnostics and the CRISP algorithm need squared magnitudes. The current code
   handles this split, but future loader/export schemas should make it explicit.
-- Ocean/NIR data is not implemented as a loader yet.
+- Ocean/NIR data is still relative, not calibrated. The extended reconstruction
+  path either scales its shape to the current reconstructed magnitude average in
+  the IR band or applies a fixed user scale. It never treats Ocean/NIR
+  magnitudes as absolute calibrated form factor.
 
 ## Verification Results
 
@@ -161,8 +215,16 @@ uv run pytest tests
 
 Result: pass.
 
-- 264 tests collected.
-- 264 passed.
+- 290 tests collected.
+- 289 passed.
+- 1 skipped because the optional reference HDF5 recording was not present in
+  the checked path.
+
+```bash
+uv run ruff check src/phase_weaver/app/logic.py src/phase_weaver/core/reconstruction.py src/phase_weaver/core/constraints.py src/phase_weaver/app/ui/reconstruction_panel.py src/phase_weaver/app/ui/main_window.py tests/app/test_logic.py tests/app/test_controls_panel.py tests/core/test_reconstruction.py
+```
+
+Result: pass.
 
 ```bash
 QT_QPA_PLATFORM=offscreen uv run python -c "<construct QApplication and MainWindow, quit after 200 ms>"
@@ -185,33 +247,27 @@ Static tooling status has not been made a release gate yet:
    Compare peak current, FWHM, RMS width, skewness, intermediate arrays, and
    iteration count against the upstream server where possible.
 
-2. Extend CRISP HDF5 loading beyond the current minimal path.
-   Add standard deviation, detection limit, and richer metadata when the exact
-   dataset keys are available. Keep both `|F|^2` and `|F|` semantics explicit.
+2. Extend CRISP HDF5 loading with richer metadata.
+   Standard deviation and detection limit are now loaded when present. Next add
+   explicit measurement kind, source-file identity, calibration state, event
+   identity, and processing choices. Keep both `|F|^2` and `|F|` semantics
+   explicit.
 
-3. Add shot selection to the GUI.
-   The loader already supports an explicit HDF5 shot index; the app should let
-   the operator choose a shot instead of always loading the latest one.
+3. Validate and tune the CRISP+IR extension on more real shots.
+   Compare automatic average matching and fixed IR scaling, and inspect whether
+   the resulting high-frequency shape is physically plausible against known
+   bunch profiles.
 
-4. Add an Ocean/NIR loader as a relative measurement path.
-   Load wavelength/intensity, optionally subtract dark, convert wavelength to
-   frequency, compute `sqrt(signal)`, robustly normalize, and label it as
-   relative `Ocean NIR |F|` or a shape constraint.
-
-5. Introduce a dedicated relative-shape frequency constraint.
-   CRISP should remain the calibrated amplitude constraint. Ocean should guide
-   shape in the NIR band without imposing an arbitrary absolute amplitude.
-
-6. Clarify export/import schema.
+4. Clarify export/import schema.
    Store measurement kind, squared-vs-magnitude semantics, source file, shot
    index, timestamp, charge, calibration state, and processing choices.
 
-7. Clean static tooling drift.
+5. Clean static tooling drift.
    Bring Ruff close to green first. Treat basedpyright as a later architecture
    pass because several issues are PySide stub friction or broader type design
    questions.
 
-8. Keep the main UI focused.
+6. Keep the main UI focused.
    Preserve the two-plot main window. Put data selection, shot selection,
    reconstruction settings, and future Ocean processing controls into explicit
    menus or tool windows.
@@ -251,8 +307,11 @@ Runs the GUI app in a normal desktop session.
 ## Bottom Line
 
 PhaseWeaver now has the first real bridge from documented CRISP server behavior
-into the app: import CRISP HDF5, reconstruct with a CRISP-like algorithm, inspect
-diagnostics, and export the run. The next step is not more generic UI work; it is
-calibration-aware data handling: validate CRISP against more real shots, expose
-shot selection, and add Ocean/NIR as an explicitly relative high-frequency
-shape constraint.
+into the app: import CRISP HDF5, choose a shot, compare against the upstream SA1
+current profile, reconstruct with a CRISP-like algorithm using upstream-style
+reconstruction input arrays when available, inspect diagnostics, and export the
+run. It also loads Ocean/NIR spectra as clearly labeled relative `|F|` data and
+can use them as opt-in high-frequency relative-shape constraints, with automatic
+band-average scaling or a fixed interactive IR scale. The next step is
+calibration-aware validation and schema work rather than hiding relative IR data
+behind absolute-form-factor semantics.

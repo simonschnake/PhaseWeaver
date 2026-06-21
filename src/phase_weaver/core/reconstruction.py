@@ -12,6 +12,7 @@ from .base import (
     Profile,
 )
 from .constraints import (
+    BlendRelativeMeasuredShape,
     CenterFirstMoment,
     ClampMagnitude,
     CombinedFrequencyConstraint,
@@ -81,6 +82,8 @@ class PhaseInitState(Protocol):
     time_constraints: set[object]
     frequency_constraints: set[object]
     stop_conditions: set[object]
+    use_fixed_ir_scale: bool
+    fixed_ir_scale: float
 
 
 DEFAULT_TIME_CONSTRAINT_NAMES = {
@@ -425,13 +428,19 @@ class GerchbergSaxton(ReconstructionAlgorithm):
         reconstruction_state: PhaseInitState,
         formfactor_input: FormFactor | None = None,
         phase_last: np.ndarray | None = None,
+        relative_measurements: tuple[MeasuredFormFactor, ...] = (),
+        relative_anchor_formfactor: FormFactor | None = None,
+        use_formfactor_input_magnitude: bool = False,
     ):
 
         self.grid = grid
         self.measurements = measurements
+        self.relative_measurements = relative_measurements
+        self.relative_anchor_formfactor = relative_anchor_formfactor
         self.reconstruction_state = reconstruction_state
         self.formfactor_input = formfactor_input
         self.phase_last = phase_last
+        self.use_formfactor_input_magnitude = use_formfactor_input_magnitude
         self.last_iterations = 0
         self.last_stop_reason = "not_run"
         self.last_measurement_error: float | None = None
@@ -448,6 +457,7 @@ class GerchbergSaxton(ReconstructionAlgorithm):
             reconstruction_state,
             formfactor_input=formfactor_input,
             phase_last=phase_last,
+            use_formfactor_input_magnitude=use_formfactor_input_magnitude,
         )
 
         self.time_constraints = self._build_time_constraints(reconstruction_state)
@@ -455,6 +465,8 @@ class GerchbergSaxton(ReconstructionAlgorithm):
             reconstruction_state,
             measurements,
             grid,
+            relative_measurements=relative_measurements,
+            relative_anchor_formfactor=relative_anchor_formfactor,
         )
         self.stop = self._build_stop_conditions(reconstruction_state, measurements)
 
@@ -523,6 +535,8 @@ class GerchbergSaxton(ReconstructionAlgorithm):
         reconstruction_state: PhaseInitState,
         measurements: tuple[MeasuredFormFactor, ...],
         grid: Grid,
+        relative_measurements: tuple[MeasuredFormFactor, ...] = (),
+        relative_anchor_formfactor: FormFactor | None = None,
     ) -> CombinedFrequencyConstraint:
         selected = _selected_names(
             reconstruction_state,
@@ -535,7 +549,10 @@ class GerchbergSaxton(ReconstructionAlgorithm):
         if "ENFORCE_DC" in selected:
             constraints.append(EnforceDCOne())
         if "HIGH_FREQ_DECAY" in selected:
-            decay_bounds = _high_frequency_decay_bounds(measurements, grid)
+            decay_bounds = _high_frequency_decay_bounds(
+                (*measurements, *relative_measurements),
+                grid,
+            )
             if decay_bounds is not None:
                 constraints.append(HighFrequencyMagnitudeDecay(*decay_bounds))
         if "BLEND_MEASURED" in selected:
@@ -546,6 +563,23 @@ class GerchbergSaxton(ReconstructionAlgorithm):
                     scale=False,
                 )
             )
+            if relative_measurements:
+                constraints.append(
+                    BlendRelativeMeasuredShape(
+                        relative_measurements,
+                        transition_width=0.0,
+                        anchor_formfactor=relative_anchor_formfactor,
+                        fixed_scale=(
+                            getattr(reconstruction_state, "fixed_ir_scale", 1.0)
+                            if getattr(
+                                reconstruction_state,
+                                "use_fixed_ir_scale",
+                                False,
+                            )
+                            else None
+                        ),
+                    )
+                )
         return CombinedFrequencyConstraint(*constraints)
 
     def _build_stop_conditions(
@@ -599,35 +633,43 @@ class GerchbergSaxton(ReconstructionAlgorithm):
         reconstruction_state: PhaseInitState,
         formfactor_input: FormFactor | None = None,
         phase_last: np.ndarray | None = None,
+        use_formfactor_input_magnitude: bool = False,
     ) -> FormFactor:
         from phase_weaver.app.state import PHASE_INIT_MODE
 
-        min_positive = _extension_min_positive(measurements[0].mag)
-        mag_init = gaussian_extend(
-            grid.f_pos,
-            measurements[0].freq,
-            measurements[0].mag,
-            min_positive=min_positive,
-        )
-        freq_left = measurements[0].freq[0]
-
-        for meas in measurements[1:]:
-            freq_right = meas.freq[0]
-            if freq_right < freq_left:
-                freq_left, freq_right = freq_right, freq_left
-
-            mag_init = interpolate_between_functions(
+        if use_formfactor_input_magnitude:
+            if formfactor_input is None:
+                raise ValueError("input form factor is required for magnitude initialization")
+            if formfactor_input.mag.shape != grid.f_pos.shape:
+                raise ValueError("input form factor magnitude must match reconstruction grid")
+            mag_init = formfactor_input.mag.copy()
+        else:
+            min_positive = _extension_min_positive(measurements[0].mag)
+            mag_init = gaussian_extend(
                 grid.f_pos,
-                mag_init,
-                gaussian_extend(
-                    grid.f_pos,
-                    meas.freq,
-                    meas.mag,
-                    min_positive=_extension_min_positive(meas.mag),
-                ),
-                freq_left,
-                freq_right,
+                measurements[0].freq,
+                measurements[0].mag,
+                min_positive=min_positive,
             )
+            freq_left = measurements[0].freq[0]
+
+            for meas in measurements[1:]:
+                freq_right = meas.freq[0]
+                if freq_right < freq_left:
+                    freq_left, freq_right = freq_right, freq_left
+
+                mag_init = interpolate_between_functions(
+                    grid.f_pos,
+                    mag_init,
+                    gaussian_extend(
+                        grid.f_pos,
+                        meas.freq,
+                        meas.mag,
+                        min_positive=_extension_min_positive(meas.mag),
+                    ),
+                    freq_left,
+                    freq_right,
+                )
 
         formfactor_init = FormFactor(
             grid=grid,

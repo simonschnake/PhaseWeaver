@@ -24,6 +24,7 @@ MIN_LOG_MAG = 1e-12
 LINE_WIDTH = 5
 FWHM_WIDTH = 6
 CAP_WIDTH = 4
+REFERENCE_CURRENT_COLOR_INDEX = 6
 
 pg.setConfigOptions(antialias=True)
 
@@ -188,6 +189,7 @@ class PlotPanel(QWidget):
         self.spectrum_model: SpectrumPlotModel | None = None
         self.measurement_lines: list[pg.PlotDataItem] = []
         self.measurement_labels: list[str] = []
+        self.reference_current_labels: list[str] = []
 
         self._create_artists()
         self._style_axes()
@@ -265,6 +267,8 @@ class PlotPanel(QWidget):
             self.canvas.spectrum_plot.removeItem(line)
         self.measurement_lines = []
         self.measurement_labels = []
+        self.reference_current_labels = []
+        self.line_reference_current.setData([], [])
 
         colors = self._colors()
         for index, item in enumerate(measurements):
@@ -281,7 +285,14 @@ class PlotPanel(QWidget):
             self.measurement_lines.append(line)
             self.measurement_labels.append(item.label)
 
-        self._refresh_legend_strips()
+            if item.reference_current is not None:
+                self.line_reference_current.setData(
+                    item.reference_current.time_s,
+                    item.reference_current.current_a,
+                )
+                self.reference_current_labels = [item.reference_current.label]
+
+        self._apply_line_visibility()
         self.refresh_canvas()
 
     def set_theme(self, theme: APP_THEME) -> None:
@@ -451,6 +462,10 @@ class PlotPanel(QWidget):
             and self.time_model is not None
             and self.time_model.current_recon_plot_A is not None
         )
+        self.line_reference_current.setVisible(
+            PLOT_LINE_MODE.CURRENT_REFERENCE in visible
+            and bool(self.reference_current_labels)
+        )
         self.line_mag.setVisible(PLOT_LINE_MODE.MAG_INPUT in visible)
         self.line_mag_recon.setVisible(
             PLOT_LINE_MODE.MAG_RECON in visible
@@ -468,6 +483,7 @@ class PlotPanel(QWidget):
     def _create_artists(self):
         self.line_current = self.canvas.time_plot.plot([], [])
         self.line_recon = self.canvas.time_plot.plot([], [])
+        self.line_reference_current = self.canvas.time_plot.plot([], [])
 
         self.line_fwhm_input = self.canvas.time_plot.plot([], [])
         self.line_fwhm_recon = self.canvas.time_plot.plot([], [])
@@ -514,6 +530,13 @@ class PlotPanel(QWidget):
 
         self.line_current.setPen(pg.mkPen(colors[0], width=LINE_WIDTH))
         self.line_recon.setPen(pg.mkPen(colors[1], width=LINE_WIDTH, style=Qt.DashLine))
+        self.line_reference_current.setPen(
+            pg.mkPen(
+                colors[REFERENCE_CURRENT_COLOR_INDEX],
+                width=LINE_WIDTH,
+                style=Qt.DotLine,
+            )
+        )
         self.line_mag.setPen(pg.mkPen(colors[0], width=LINE_WIDTH))
         self.line_mag_recon.setPen(
             pg.mkPen(colors[1], width=LINE_WIDTH, style=Qt.DashLine)
@@ -558,6 +581,18 @@ class PlotPanel(QWidget):
             and self.time_model.current_recon_plot_A is not None
         ):
             time_items.append(("reconstructed", colors[1], Qt.PenStyle.DashLine, False))
+        if (
+            PLOT_LINE_MODE.CURRENT_REFERENCE in visible
+            and self.reference_current_labels
+        ):
+            time_items.append(
+                (
+                    self.reference_current_labels[0],
+                    colors[REFERENCE_CURRENT_COLOR_INDEX],
+                    Qt.PenStyle.DotLine,
+                    False,
+                )
+            )
         self.canvas.time_legend.set_items(
             time_items, theme.legend_background, theme.text
         )

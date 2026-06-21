@@ -5,6 +5,7 @@ from numpy.testing import assert_allclose
 from phase_weaver.core.base import FormFactor, Grid, Profile
 from phase_weaver.core.constraints import (
     BlendMeasuredMagnitude,
+    BlendRelativeMeasuredShape,
     ClampMagnitude,
     CenterFirstMoment,
     CombinedFrequencyConstraint,
@@ -121,6 +122,82 @@ def test_high_frequency_magnitude_decay_noops_when_start_above_grid(grid):
     ).apply(ff)
 
     assert_allclose(ff.mag, mag)
+
+
+def test_blend_relative_measured_shape_scales_to_band_average():
+    grid = Grid.from_df_fmax(df=1.0, f_max=20.0, snap_pow2=False)
+    original_mag = np.linspace(1.0, 0.1, len(grid.f_pos))
+    ff = FormFactor(
+        grid=grid,
+        mag=original_mag.copy(),
+        phase=np.zeros_like(original_mag),
+    )
+    measured = MeasuredFormFactor(
+        freq=np.array([10.0, 11.0, 12.0, 13.0, 14.0]),
+        mag=np.array([100.0, 80.0, 60.0, 40.0, 20.0]),
+    )
+
+    BlendRelativeMeasuredShape(
+        (measured,),
+        transition_width=0.0,
+    ).apply(ff)
+
+    band = np.isin(grid.f_pos, measured.freq)
+    assert np.mean(ff.mag[band]) == pytest.approx(np.mean(original_mag[band]))
+    assert ff.mag[grid.f_pos == 14.0][0] == pytest.approx(
+        20.0 * np.mean(original_mag[band]) / np.mean(measured.mag)
+    )
+
+
+def test_blend_relative_measured_shape_can_use_fixed_anchor_formfactor():
+    grid = Grid.from_df_fmax(df=1.0, f_max=20.0, snap_pow2=False)
+    current_mag = np.full(len(grid.f_pos), 0.01)
+    anchor_mag = np.linspace(1.0, 0.1, len(grid.f_pos))
+    ff = FormFactor(
+        grid=grid,
+        mag=current_mag.copy(),
+        phase=np.zeros_like(current_mag),
+    )
+    anchor_ff = FormFactor(
+        grid=grid,
+        mag=anchor_mag.copy(),
+        phase=np.zeros_like(anchor_mag),
+    )
+    measured = MeasuredFormFactor(
+        freq=np.array([10.0, 11.0, 12.0, 13.0, 14.0]),
+        mag=np.array([100.0, 80.0, 60.0, 40.0, 20.0]),
+    )
+
+    BlendRelativeMeasuredShape(
+        (measured,),
+        transition_width=0.0,
+        anchor_formfactor=anchor_ff,
+    ).apply(ff)
+
+    band = np.isin(grid.f_pos, measured.freq)
+    assert np.mean(ff.mag[band]) == pytest.approx(np.mean(anchor_mag[band]))
+    assert np.mean(ff.mag[band]) != pytest.approx(np.mean(current_mag[band]))
+
+
+def test_blend_relative_measured_shape_can_use_fixed_scale():
+    grid = Grid.from_df_fmax(df=1.0, f_max=20.0, snap_pow2=False)
+    ff = FormFactor(
+        grid=grid,
+        mag=np.full(len(grid.f_pos), 0.01),
+        phase=np.zeros(len(grid.f_pos)),
+    )
+    measured = MeasuredFormFactor(
+        freq=np.array([10.0, 11.0, 12.0]),
+        mag=np.array([0.2, 0.4, 0.6]),
+    )
+
+    BlendRelativeMeasuredShape(
+        (measured,),
+        transition_width=0.0,
+        fixed_scale=2.5,
+    ).apply(ff)
+
+    assert_allclose(ff.mag[np.isin(grid.f_pos, measured.freq)], [0.5, 1.0, 1.5])
 
 
 def test_replace_phase_end_linear(grid):

@@ -318,6 +318,63 @@ class BlendMeasuredMagnitude(FrequencyConstraint):
             )
 
 
+class BlendRelativeMeasuredShape(BlendMeasuredMagnitude):
+    """Blend relative measured shapes after matching their band-average level."""
+
+    def __init__(
+        self,
+        measured: tuple[MeasuredFormFactor, ...],
+        power: float = 2.0,
+        transition_width: float | None = None,
+        anchor_formfactor: "FormFactor | None" = None,
+        fixed_scale: float | None = None,
+    ):
+        super().__init__(measured, power=power, transition_width=transition_width)
+        self.anchor_formfactor = anchor_formfactor
+        if fixed_scale is not None and (
+            not np.isfinite(fixed_scale) or fixed_scale < 0.0
+        ):
+            raise ValueError("fixed_scale must be finite and non-negative")
+        self.fixed_scale = None if fixed_scale is None else float(fixed_scale)
+
+    def apply(self, ff: "FormFactor") -> None:
+        eps = np.finfo(float).eps
+        for meas in self.measured:
+            if self.fixed_scale is None:
+                anchor_ff = self.anchor_formfactor or ff
+                scale_anchor_mag = np.interp(
+                    meas.freq,
+                    anchor_ff.grid.f_pos,
+                    anchor_ff.mag,
+                )
+                valid = (
+                    np.isfinite(meas.mag)
+                    & np.isfinite(scale_anchor_mag)
+                    & (meas.mag > eps)
+                    & (scale_anchor_mag >= 0.0)
+                )
+                if not np.any(valid):
+                    continue
+
+                measured_average = float(np.mean(meas.mag[valid]))
+                reconstruction_average = float(np.mean(scale_anchor_mag[valid]))
+                if measured_average <= eps:
+                    continue
+                scale = reconstruction_average / measured_average
+            else:
+                scale = self.fixed_scale
+
+            y_source = meas.mag * scale
+            ff.mag = smooth_overlap(
+                x_target=ff.grid.f_pos,
+                y_target=ff.mag,
+                x_source=meas.freq,
+                y_source=y_source,
+                power=self.power,
+                transition_width=self.transition_width,
+            )
+
+
 class CutAfterNthZeroFromPeak(TimeConstraint):
     def __init__(
         self, n: int = 10, threshold: float = 0.0, keep_crossing: bool = False
