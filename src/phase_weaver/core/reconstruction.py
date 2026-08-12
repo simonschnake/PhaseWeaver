@@ -27,6 +27,7 @@ from .constraints import (
 )
 
 from .measurement import MeasuredFormFactor
+from .policy import PHASE_INIT_MODE
 
 # from .utils import exponential_extend
 # from .utils import quadratic_log_extend
@@ -647,8 +648,6 @@ class GerchbergSaxton(ReconstructionAlgorithm):
         phase_last: np.ndarray | None = None,
         use_formfactor_input_magnitude: bool = False,
     ) -> FormFactor:
-        from phase_weaver.app.state import PHASE_INIT_MODE
-
         if use_formfactor_input_magnitude:
             if formfactor_input is None:
                 raise ValueError("input form factor is required for magnitude initialization")
