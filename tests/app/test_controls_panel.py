@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QApplication
 import phase_weaver.app.config as cfg
 from phase_weaver.app.config import MEASUREMENT_MODE
 from phase_weaver.app.logic import H5MeasurementShot
-from phase_weaver.app.state import ProfileModelState, ReconstructionState
+from phase_weaver.app.state import MeasurementState, ProfileModelState, ReconstructionState
 from phase_weaver.app.ui.main_window import MainWindow
 from phase_weaver.app.ui.measurement_time_dialog import MeasurementTimeDialog
 from phase_weaver.app.ui.reconstruction_panel import ReconstructionPanel
@@ -122,6 +122,54 @@ def test_reconstruction_panel_provides_measurement_and_reconstruction_state():
     )
 
 
+def test_reconstruction_panel_configures_and_regenerates_crisp_detector_noise():
+    _app()
+    panel = ReconstructionPanel()
+    panel.set_measurement_state(
+        MeasurementState(
+            crisp=True,
+            crisp_simulation_mode=cfg.CRISP_SIMULATION_MODE.DETECTOR,
+            crisp_n_shots=12,
+            crisp_noise_seed=41,
+        )
+    )
+
+    state = panel.get_measurement_state()
+
+    assert state.crisp is True
+    assert state.crisp_simulation_mode == cfg.CRISP_SIMULATION_MODE.DETECTOR
+    assert state.crisp_n_shots == 12
+    assert state.crisp_noise_seed == 41
+
+    panel.regenerate_crisp_noise_button.click()
+
+    assert panel.get_measurement_state().crisp_noise_seed == 42
+
+
+def test_reconstruction_panel_configures_and_regenerates_ocean_detector_noise():
+    _app()
+    panel = ReconstructionPanel()
+    panel.set_measurement_state(
+        MeasurementState(
+            infrared=True,
+            infrared_simulation_mode=cfg.IR_SIMULATION_MODE.OCEAN,
+            infrared_n_shots=16,
+            infrared_noise_seed=8,
+        )
+    )
+
+    state = panel.get_measurement_state()
+
+    assert state.infrared is True
+    assert state.infrared_simulation_mode == cfg.IR_SIMULATION_MODE.OCEAN
+    assert state.infrared_n_shots == 16
+    assert state.infrared_noise_seed == 8
+
+    panel.regenerate_infrared_noise_button.click()
+
+    assert panel.get_measurement_state().infrared_noise_seed == 9
+
+
 def test_reconstruction_panel_restores_reconstruction_state():
     _app()
     panel = ReconstructionPanel()
@@ -225,8 +273,15 @@ def test_main_window_persists_controls_settings(tmp_path):
     )
     window.toy_model_panel.spike2_box.set_enabled_component(True)
     window.reconstruction_panel.set_measurement_state(
-        window.reconstruction_panel.get_measurement_state().__class__(
-            crisp=True, infrared=True
+        MeasurementState(
+            crisp=True,
+            infrared=True,
+            crisp_simulation_mode=cfg.CRISP_SIMULATION_MODE.DETECTOR,
+            crisp_n_shots=8,
+            crisp_noise_seed=77,
+            infrared_simulation_mode=cfg.IR_SIMULATION_MODE.OCEAN,
+            infrared_n_shots=20,
+            infrared_noise_seed=33,
         )
     )
     window.reconstruction_panel.set_reconstruction_state(
@@ -323,6 +378,12 @@ def test_main_window_renders_active_measurement_points():
         MEASUREMENT_MODE.CRISP,
         MEASUREMENT_MODE.INFRARED,
     }
+    window.reconstruction_panel.crisp_simulation_box.mode = (
+        cfg.CRISP_SIMULATION_MODE.IDEAL
+    )
+    window.reconstruction_panel.infrared_simulation_box.mode = (
+        cfg.IR_SIMULATION_MODE.IDEAL
+    )
 
     window.redraw_input()
 

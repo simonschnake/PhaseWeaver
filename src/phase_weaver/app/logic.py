@@ -8,6 +8,8 @@ import numpy as np
 from phase_weaver.app.config import (
     CRISP_MIN_HZ,
     CRISP_MAX_HZ,
+    CRISP_SIMULATION_MODE,
+    IR_SIMULATION_MODE,
     IR_MIN_HZ,
     IR_MAX_HZ,
     PHASE_INIT_MODE,
@@ -27,7 +29,17 @@ from phase_weaver.core.crisp_reconstruction import (
     CrispReconstructionConfig,
     CrispReconstructionInput,
 )
+from phase_weaver.core.crisp_simulation import (
+    CrispSimulationConfig,
+    CrispSimulationResult,
+    simulate_crisp_measurement,
+)
 from phase_weaver.core.measurement import MeasuredFormFactor
+from phase_weaver.core.ocean_simulation import (
+    OceanSimulationConfig,
+    OceanSimulationResult,
+    simulate_ocean_measurement,
+)
 from phase_weaver.core.reconstruction import (
     GerchbergSaxton,
     ReconstructionAlgorithm,
@@ -114,19 +126,28 @@ def _decode_label(value: object, fallback: str) -> str:
 def _ocean_relative_measurement_from_wavelength_signal(
     wavelength_nm: np.ndarray,
     signal: np.ndarray,
+    signal_std: np.ndarray | None = None,
 ) -> LoadedMeasurement | None:
     wavelength_nm = np.asarray(wavelength_nm, dtype=float)
     signal = np.maximum(np.asarray(signal, dtype=float), 0.0)
+    if signal_std is not None:
+        signal_std = np.asarray(signal_std, dtype=float)
+        if signal_std.shape != signal.shape:
+            raise ValueError("Ocean signal uncertainty must match the signal shape")
     valid = (
         np.isfinite(wavelength_nm)
         & np.isfinite(signal)
         & (wavelength_nm > 0.0)
     )
+    if signal_std is not None:
+        valid &= np.isfinite(signal_std) & (signal_std >= 0.0)
     if not np.any(valid):
         return None
 
     frequency_hz = (C_NM_THZ / wavelength_nm[valid]) * THZ_TO_HZ
     signal = signal[valid]
+    if signal_std is not None:
+        signal_std = signal_std[valid]
     band = (
         np.isfinite(frequency_hz)
         & (frequency_hz >= IR_MIN_HZ)
@@ -141,11 +162,27 @@ def _ocean_relative_measurement_from_wavelength_signal(
     if not np.isfinite(scale) or scale <= 0.0:
         return None
 
+    mag_std = None
+    detection_limit = None
+    if signal_std is not None:
+        band_signal_std = signal_std[band]
+        intensity_detection_limit = 3.0 * band_signal_std
+        propagation_floor = np.maximum(signal[band], intensity_detection_limit)
+        mag_std = (
+            0.5
+            * band_signal_std
+            / np.sqrt(np.maximum(propagation_floor, np.finfo(float).eps))
+            / scale
+        )
+        detection_limit = np.sqrt(intensity_detection_limit) / scale
+
     return LoadedMeasurement(
         label="Ocean NIR relative |F|",
         measured=MeasuredFormFactor(
             freq=frequency_hz[band],
             mag=np.clip(mag_like / scale, 0.0, 1.0),
+            mag_std=mag_std,
+            detection_limit=detection_limit,
         ),
         kind="ocean_nir",
         calibration="relative_shape",
@@ -159,9 +196,23 @@ def load_measurements_npz(path: str | Path) -> tuple[LoadedMeasurement, ...]:
         keys = set(data.files)
 
         if {"e_axis", "average"} <= keys:
+            signal_std = None
+            if "map" in keys:
+                spectrum_map = np.asarray(data["map"], dtype=float)
+                wavelength_size = np.asarray(data["e_axis"]).size
+                if spectrum_map.ndim == 2:
+                    if spectrum_map.shape[0] == wavelength_size:
+                        signal_std = np.nanstd(spectrum_map, axis=1) / np.sqrt(
+                            spectrum_map.shape[1]
+                        )
+                    elif spectrum_map.shape[1] == wavelength_size:
+                        signal_std = np.nanstd(spectrum_map, axis=0) / np.sqrt(
+                            spectrum_map.shape[0]
+                        )
             measurement = _ocean_relative_measurement_from_wavelength_signal(
                 data["e_axis"],
                 data["average"],
+                signal_std=signal_std,
             )
             if measurement is None:
                 raise ValueError("waterflow npz does not contain usable Ocean/NIR signal")
@@ -177,6 +228,13 @@ def load_measurements_npz(path: str | Path) -> tuple[LoadedMeasurement, ...]:
             measurement = _ocean_relative_measurement_from_wavelength_signal(
                 wavelength_nm,
                 np.nanmean(spectrum_history[:, : len(wavelength_nm)], axis=0),
+                signal_std=(
+                    np.nanstd(
+                        spectrum_history[:, : len(wavelength_nm)],
+                        axis=0,
+                    )
+                    / np.sqrt(spectrum_history.shape[0])
+                ),
             )
             if measurement is None:
                 raise ValueError("cor2d npz does not contain usable Ocean/NIR signal")
@@ -565,8 +623,10 @@ class AppLogic:
     ]:
         prof_input = self.compute_input_profile(controls_state)
         ff_input = self.compute_input_formfactor(prof_input)
-        measurements = self.compute_measured_formfactor(
-            ff_input, controls_state.measurement
+        measurements, _source = self.active_measurements(
+            ff_input,
+            controls_state.measurement,
+            input_profile=prof_input,
         )
         return prof_input, ff_input, measurements
 
@@ -577,6 +637,7 @@ class AppLogic:
         controls_state: ControlsState,
         ff_input: FormFactor | None,
         measurement_source: str = "simulated",
+        input_profile: Profile | None = None,
     ) -> tuple[Profile, FormFactor, ReconstructionSummary]:
         algorithm = controls_state.reconstruction.algorithm
         if algorithm == RECONSTRUCTION_ALGORITHM.CRISP:
@@ -584,13 +645,16 @@ class AppLogic:
                 measurements,
                 controls_state,
                 measurement_source=measurement_source,
+                input_profile=input_profile,
             )
             reconstruction = CrispReconstruction(crisp_input)
             result = reconstruction.run()
-            relative_measurements = self.relative_measurements_for_reconstruction(
-                controls_state.reconstruction
+            relative_measurements = self._available_relative_ir_measurements(
+                measurement_state=controls_state.measurement,
+                form_factor=ff_input,
             )
-            if relative_measurements:
+            has_absolute_ir_measurement = len(measurements) > 1
+            if has_absolute_ir_measurement or relative_measurements:
                 extension_state = self._crisp_extension_reconstruction_state(
                     controls_state.reconstruction
                 )
@@ -620,7 +684,7 @@ class AppLogic:
                     status="finished",
                     history=extension.history,
                     crisp_diagnostics=result.diagnostics,
-                    ir_relative_constraint_used=True,
+                    ir_relative_constraint_used=bool(relative_measurements),
                     relative_measurement_count=len(relative_measurements),
                 )
                 self.phase_last = form_factor.phase.copy()
@@ -641,19 +705,23 @@ class AppLogic:
             self.reconstruction_summary = summary
             return result.profile, result.form_factor, summary
 
+        relative_measurements = self.relative_measurements_for_reconstruction(
+            controls_state.reconstruction,
+            measurement_state=controls_state.measurement,
+            form_factor=ff_input,
+        )
         reconstruction = GerchbergSaxton(
             grid=grid,
             measurements=measurements,
             reconstruction_state=controls_state.reconstruction,
             formfactor_input=ff_input,
             phase_last=self.phase_last,
-            relative_measurements=self.relative_measurements_for_reconstruction(
-                controls_state.reconstruction
-            ),
+            relative_measurements=relative_measurements,
             relative_anchor_formfactor=self.relative_anchor_formfactor(
                 controls_state.reconstruction,
                 measurement_source=measurement_source,
             ),
+            use_formfactor_input_magnitude=not measurements,
         )
 
         prof_recon, ff_recon = reconstruction.run()
@@ -689,19 +757,54 @@ class AppLogic:
         )
 
     def relative_measurements_for_reconstruction(
-        self, reconstruction_state: ReconstructionState
+        self,
+        reconstruction_state: ReconstructionState,
+        *,
+        measurement_state: MeasurementState | None = None,
+        form_factor: FormFactor | None = None,
     ) -> tuple[MeasuredFormFactor, ...]:
         if not reconstruction_state.use_ir_relative_constraint:
             return ()
 
+        relative = self._available_relative_ir_measurements(
+            measurement_state=measurement_state,
+            form_factor=form_factor,
+        )
+        if relative:
+            return relative
+
+        raise ValueError(
+            "No relative IR measurement is available. Enable IR with Ocean detector "
+            "simulation or load an Ocean/NIR measurement."
+        )
+
+    def _available_relative_ir_measurements(
+        self,
+        *,
+        measurement_state: MeasurementState | None = None,
+        form_factor: FormFactor | None = None,
+    ) -> tuple[MeasuredFormFactor, ...]:
         relative = tuple(
             item.measured
             for item in self.loaded_measurements
             if item.kind == "ocean_nir"
         )
-        if not relative:
-            raise ValueError("No IR measurement loaded for extended CRISP reconstruction")
-        return relative
+        if relative:
+            return relative
+
+        if (
+            measurement_state is not None
+            and measurement_state.infrared
+            and measurement_state.infrared_simulation_mode
+            == IR_SIMULATION_MODE.OCEAN
+        ):
+            if form_factor is None:
+                raise ValueError("Ocean detector simulation requires the input form factor")
+            return (
+                self._simulated_ocean_measurement(form_factor, measurement_state),
+            )
+
+        return ()
 
     def relative_anchor_formfactor(
         self,
@@ -724,6 +827,7 @@ class AppLogic:
         controls_state: ControlsState,
         *,
         measurement_source: str,
+        input_profile: Profile | None,
     ) -> CrispReconstructionInput:
         if measurement_source == "loaded":
             for item in self.loaded_measurements:
@@ -732,6 +836,19 @@ class AppLogic:
 
         if not measurements:
             raise ValueError("CRISP reconstruction requires at least one measurement")
+
+        if (
+            controls_state.measurement.crisp
+            and
+            controls_state.measurement.crisp_simulation_mode
+            == CRISP_SIMULATION_MODE.DETECTOR
+        ):
+            if input_profile is None:
+                raise ValueError("CRISP detector simulation requires the input profile")
+            return self._simulated_crisp_input(
+                input_profile,
+                controls_state.measurement,
+            )
 
         measured = measurements[0]
         positive = measured.freq > 0.0
@@ -754,8 +871,85 @@ class AppLogic:
     ) -> FormFactor:
         return prof.to_form_factor()
 
+    def _simulate_crisp_detector(
+        self,
+        input_profile: Profile,
+        measurement_state: MeasurementState,
+    ) -> CrispSimulationResult:
+        if input_profile.charge is None:
+            raise ValueError("CRISP detector simulation requires profile charge")
+        return simulate_crisp_measurement(
+            input_profile.grid.t,
+            input_profile.values * input_profile.charge,
+            input_profile.charge,
+            CrispSimulationConfig(
+                n_shots=measurement_state.crisp_n_shots,
+                seed=measurement_state.crisp_noise_seed,
+            ),
+        )
+
+    def _simulated_crisp_input(
+        self,
+        input_profile: Profile,
+        measurement_state: MeasurementState,
+    ) -> CrispReconstructionInput:
+        simulation = self._simulate_crisp_detector(input_profile, measurement_state)
+        assert input_profile.charge is not None
+        scale_sq = measurement_state.crisp_scale**2
+        return CrispReconstructionInput(
+            freq_hz=simulation.freq_hz,
+            ffsq=simulation.ffsq * scale_sq,
+            ffsq_std=simulation.ffsq_std * scale_sq,
+            detection_limit=simulation.ffsq_detection_limit * scale_sq,
+            charge_c=input_profile.charge,
+        )
+
+    def _simulate_ocean_detector(
+        self,
+        form_factor: FormFactor,
+        measurement_state: MeasurementState,
+    ) -> OceanSimulationResult:
+        return simulate_ocean_measurement(
+            form_factor.grid.f_pos,
+            form_factor.mag,
+            OceanSimulationConfig(
+                n_shots=measurement_state.infrared_n_shots,
+                seed=measurement_state.infrared_noise_seed,
+            ),
+        )
+
+    def _simulated_ocean_measurement(
+        self,
+        form_factor: FormFactor,
+        measurement_state: MeasurementState,
+    ) -> MeasuredFormFactor:
+        simulation = self._simulate_ocean_detector(form_factor, measurement_state)
+        band = (
+            (simulation.freq_hz >= IR_MIN_HZ)
+            & (simulation.freq_hz <= IR_MAX_HZ)
+        )
+        return MeasuredFormFactor(
+            freq=simulation.freq_hz[band],
+            mag=(
+                simulation.ffabs_relative[band]
+                * measurement_state.infrared_scale
+            ),
+            mag_std=(
+                simulation.ffabs_std[band]
+                * measurement_state.infrared_scale
+            ),
+            detection_limit=(
+                simulation.ffabs_detection_limit[band]
+                * measurement_state.infrared_scale
+            ),
+        )
+
     def compute_measured_formfactor(
-        self, form_factor: FormFactor, measurement_state: MeasurementState
+        self,
+        form_factor: FormFactor,
+        measurement_state: MeasurementState,
+        *,
+        input_profile: Profile | None = None,
     ) -> tuple[MeasuredFormFactor, ...]:
         freq = form_factor.grid.f_pos
         mag = form_factor.mag
@@ -765,25 +959,45 @@ class AppLogic:
         measured: list[MeasuredFormFactor] = []
 
         if measurement_state.crisp:
-            mask_crisp = (freq >= CRISP_MIN_HZ) & (freq <= CRISP_MAX_HZ)
-            freq_crisp = freq[mask_crisp]
-            mag_crisp = mag[mask_crisp] * measurement_state.crisp_scale
+            if measurement_state.crisp_simulation_mode == CRISP_SIMULATION_MODE.DETECTOR:
+                if input_profile is None:
+                    raise ValueError("CRISP detector simulation requires the input profile")
+                simulation = self._simulate_crisp_detector(
+                    input_profile,
+                    measurement_state,
+                )
+                freq_crisp = simulation.freq_hz
+                mag_crisp = simulation.ffabs * measurement_state.crisp_scale
+            else:
+                mask_crisp = (freq >= CRISP_MIN_HZ) & (freq <= CRISP_MAX_HZ)
+                freq_crisp = freq[mask_crisp]
+                mag_crisp = mag[mask_crisp] * measurement_state.crisp_scale
             meas_crisp = MeasuredFormFactor(freq=freq_crisp, mag=mag_crisp)
 
             measured.append(meas_crisp)
 
         if measurement_state.infrared:
-            mask_ir = (freq >= IR_MIN_HZ) & (freq <= IR_MAX_HZ)
-            freq_ir = freq[mask_ir]
-            mag_ir = mag[mask_ir] * measurement_state.infrared_scale
-            meas_ir = MeasuredFormFactor(freq=freq_ir, mag=mag_ir)
+            if measurement_state.infrared_simulation_mode == IR_SIMULATION_MODE.OCEAN:
+                meas_ir = self._simulated_ocean_measurement(
+                    form_factor,
+                    measurement_state,
+                )
+            else:
+                mask_ir = (freq >= IR_MIN_HZ) & (freq <= IR_MAX_HZ)
+                freq_ir = freq[mask_ir]
+                mag_ir = mag[mask_ir] * measurement_state.infrared_scale
+                meas_ir = MeasuredFormFactor(freq=freq_ir, mag=mag_ir)
 
             measured.append(meas_ir)
 
         return tuple(measured)
 
     def active_measurements(
-        self, form_factor: FormFactor, measurement_state: MeasurementState
+        self,
+        form_factor: FormFactor,
+        measurement_state: MeasurementState,
+        *,
+        input_profile: Profile | None = None,
     ) -> tuple[tuple[MeasuredFormFactor, ...], str]:
         if self.loaded_measurements:
             return (
@@ -794,10 +1008,27 @@ class AppLogic:
                 ),
                 "loaded",
             )
-        return self.compute_measured_formfactor(form_factor, measurement_state), "simulated"
+        measurements = self.compute_measured_formfactor(
+            form_factor,
+            measurement_state,
+            input_profile=input_profile,
+        )
+        if (
+            measurement_state.infrared
+            and measurement_state.infrared_simulation_mode
+            == IR_SIMULATION_MODE.OCEAN
+        ):
+            # The Ocean result is an uncalibrated relative measurement.  Keep
+            # it out of the absolute magnitude constraint.
+            measurements = measurements[:-1]
+        return measurements, "simulated"
 
     def visible_measurements(
-        self, form_factor: FormFactor, measurement_state: MeasurementState
+        self,
+        form_factor: FormFactor,
+        measurement_state: MeasurementState,
+        *,
+        input_profile: Profile | None = None,
     ) -> tuple[LoadedMeasurement, ...]:
         if self.loaded_measurements:
             return self.loaded_measurements
@@ -807,26 +1038,64 @@ class AppLogic:
         mag = form_factor.mag
 
         if measurement_state.crisp:
-            mask_crisp = (freq >= CRISP_MIN_HZ) & (freq <= CRISP_MAX_HZ)
+            if measurement_state.crisp_simulation_mode == CRISP_SIMULATION_MODE.DETECTOR:
+                if input_profile is None:
+                    raise ValueError("CRISP detector simulation requires the input profile")
+                simulation = self._simulate_crisp_detector(
+                    input_profile,
+                    measurement_state,
+                )
+                crisp_measurement = MeasuredFormFactor(
+                    freq=simulation.freq_hz,
+                    mag=simulation.ffabs * measurement_state.crisp_scale,
+                )
+                crisp_label = "CRISP detector simulation"
+            else:
+                mask_crisp = (freq >= CRISP_MIN_HZ) & (freq <= CRISP_MAX_HZ)
+                crisp_measurement = MeasuredFormFactor(
+                    freq=freq[mask_crisp],
+                    mag=mag[mask_crisp] * measurement_state.crisp_scale,
+                )
+                crisp_label = "CRISP"
             visible.append(
                 LoadedMeasurement(
-                    label="CRISP",
-                    measured=MeasuredFormFactor(
-                        freq=freq[mask_crisp],
-                        mag=mag[mask_crisp] * measurement_state.crisp_scale,
-                    ),
+                    label=crisp_label,
+                    measured=crisp_measurement,
+                    kind="crisp",
+                    calibration="simulated_calibrated"
+                    if measurement_state.crisp_simulation_mode
+                    == CRISP_SIMULATION_MODE.DETECTOR
+                    else "simulated_ideal",
                 )
             )
 
         if measurement_state.infrared:
-            mask_ir = (freq >= IR_MIN_HZ) & (freq <= IR_MAX_HZ)
+            if measurement_state.infrared_simulation_mode == IR_SIMULATION_MODE.OCEAN:
+                ir_measurement = self._simulated_ocean_measurement(
+                    form_factor,
+                    measurement_state,
+                )
+                ir_label = "Ocean NIR detector simulation"
+                ir_calibration = "simulated_relative_shape"
+                ir_kind = "ocean_nir"
+                ir_use_in_reconstruction = False
+            else:
+                mask_ir = (freq >= IR_MIN_HZ) & (freq <= IR_MAX_HZ)
+                ir_measurement = MeasuredFormFactor(
+                    freq=freq[mask_ir],
+                    mag=mag[mask_ir] * measurement_state.infrared_scale,
+                )
+                ir_label = "IR"
+                ir_calibration = "simulated_ideal"
+                ir_kind = "infrared"
+                ir_use_in_reconstruction = True
             visible.append(
                 LoadedMeasurement(
-                    label="IR",
-                    measured=MeasuredFormFactor(
-                        freq=freq[mask_ir],
-                        mag=mag[mask_ir] * measurement_state.infrared_scale,
-                    ),
+                    label=ir_label,
+                    measured=ir_measurement,
+                    kind=ir_kind,
+                    calibration=ir_calibration,
+                    use_in_reconstruction=ir_use_in_reconstruction,
                 )
             )
 
@@ -914,6 +1183,12 @@ class AppLogic:
             payload[f"measurement_label_{i}"] = np.array(item.label)
             payload[f"measurement_freq_hz_{i}"] = item.measured.freq
             payload[f"measurement_mag_{i}"] = item.measured.mag
+            if item.measured.mag_std is not None:
+                payload[f"measurement_mag_std_{i}"] = item.measured.mag_std
+            if item.measured.detection_limit is not None:
+                payload[f"measurement_detection_limit_{i}"] = (
+                    item.measured.detection_limit
+                )
             payload[f"measurement_kind_{i}"] = np.array(item.kind)
             payload[f"measurement_calibration_{i}"] = np.array(item.calibration)
             payload[f"measurement_use_in_reconstruction_{i}"] = np.array(
@@ -945,10 +1220,14 @@ class AppLogic:
                 diagnostics.intermediate_frequencies_thz
             ),
             "crisp_intermediate_ffsq": diagnostics.intermediate_ffsq,
+            "crisp_intermediate_ffsq_std": diagnostics.intermediate_ffsq_std,
             "crisp_interpolated_frequencies_thz": (
                 diagnostics.interpolated_frequencies_thz
             ),
             "crisp_interpolated_ffabs": diagnostics.interpolated_ffabs,
+            "crisp_interpolated_ffabs_error": (
+                diagnostics.interpolated_ffabs_error
+            ),
             "crisp_num_input_points": np.array(diagnostics.num_input_points),
             "crisp_num_filtered_input_points": np.array(
                 diagnostics.num_filtered_input_points
@@ -968,6 +1247,7 @@ class AppLogic:
 
     def _state_payload(self, controls_state: ControlsState) -> dict[str, np.ndarray]:
         scenario = controls_state.scenario
+        measurement = controls_state.measurement
         reconstruction = controls_state.reconstruction
         payload: dict[str, np.ndarray] = {
             "reconstruction_algorithm": np.array(reconstruction.algorithm.value),
@@ -988,6 +1268,24 @@ class AppLogic:
                 reconstruction.use_fixed_ir_scale
             ),
             "reconstruction_fixed_ir_scale": np.array(reconstruction.fixed_ir_scale),
+            "measurement_crisp_enabled": np.array(measurement.crisp),
+            "measurement_infrared_enabled": np.array(measurement.infrared),
+            "measurement_crisp_simulation_mode": np.array(
+                measurement.crisp_simulation_mode.value
+            ),
+            "measurement_crisp_n_shots": np.array(measurement.crisp_n_shots),
+            "measurement_crisp_noise_seed": np.array(
+                measurement.crisp_noise_seed
+            ),
+            "measurement_infrared_simulation_mode": np.array(
+                measurement.infrared_simulation_mode.value
+            ),
+            "measurement_infrared_n_shots": np.array(
+                measurement.infrared_n_shots
+            ),
+            "measurement_infrared_noise_seed": np.array(
+                measurement.infrared_noise_seed
+            ),
             "profile_dt_s": np.array(scenario.dt),
             "profile_t_max_s": np.array(scenario.t_max),
             "profile_charge_c": np.array(scenario.charge),

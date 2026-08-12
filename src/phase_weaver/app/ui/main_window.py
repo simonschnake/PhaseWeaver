@@ -255,14 +255,22 @@ class MainWindow(QMainWindow):
         ff_input = self.logic.compute_input_formfactor(prof_input)
         self.plot_panel.render_input(prof_input, ff_input)
         self.plot_panel.render_measurements(
-            self.logic.visible_measurements(ff_input, state.measurement)
+            self.logic.visible_measurements(
+                ff_input,
+                state.measurement,
+                input_profile=prof_input,
+            )
         )
 
     def run_reconstruction_requested(self) -> None:
         state = self.get_controls_state()
         prof_input = self.logic.compute_input_profile(state)
         ff_input = self.logic.compute_input_formfactor(prof_input)
-        measurements, source = self.logic.active_measurements(ff_input, state.measurement)
+        measurements, source = self.logic.active_measurements(
+            ff_input,
+            state.measurement,
+            input_profile=prof_input,
+        )
 
         running_summary = ReconstructionSummary(
             algorithm=state.reconstruction.algorithm.value,
@@ -279,6 +287,7 @@ class MainWindow(QMainWindow):
                 controls_state=state,
                 ff_input=ff_input,
                 measurement_source=source,
+                input_profile=prof_input,
             )
         except Exception as exc:
             failed_summary = ReconstructionSummary(
@@ -297,7 +306,11 @@ class MainWindow(QMainWindow):
             prof_recon.charge = prof_input.charge
         self.plot_panel.render_input(prof_input, ff_input)
         self.plot_panel.render_measurements(
-            self.logic.visible_measurements(ff_input, state.measurement)
+            self.logic.visible_measurements(
+                ff_input,
+                state.measurement,
+                input_profile=prof_input,
+            )
         )
         self.plot_panel.render_reconstruction(prof_recon, ff_recon)
         self.update_summary(summary)
@@ -436,6 +449,16 @@ class MainWindow(QMainWindow):
             "measurement": {
                 "crisp": state.measurement.crisp,
                 "infrared": state.measurement.infrared,
+                "crisp_simulation_mode": (
+                    state.measurement.crisp_simulation_mode.name
+                ),
+                "crisp_n_shots": state.measurement.crisp_n_shots,
+                "crisp_noise_seed": state.measurement.crisp_noise_seed,
+                "infrared_simulation_mode": (
+                    state.measurement.infrared_simulation_mode.name
+                ),
+                "infrared_n_shots": state.measurement.infrared_n_shots,
+                "infrared_noise_seed": state.measurement.infrared_noise_seed,
             },
             "reconstruction": {
                 "algorithm": state.reconstruction.algorithm.name,
@@ -484,6 +507,29 @@ class MainWindow(QMainWindow):
         measurement = MeasurementState(
             crisp=bool(measurement_payload.get("crisp", False)),
             infrared=bool(measurement_payload.get("infrared", False)),
+            crisp_simulation_mode=self._enum_from_name(
+                cfg.CRISP_SIMULATION_MODE,
+                measurement_payload.get("crisp_simulation_mode"),
+                cfg.CRISP_SIMULATION_MODE.IDEAL,
+            ),
+            crisp_n_shots=max(1, int(measurement_payload.get("crisp_n_shots", 1))),
+            crisp_noise_seed=max(
+                0,
+                int(measurement_payload.get("crisp_noise_seed", 0)),
+            ),
+            infrared_simulation_mode=self._enum_from_name(
+                cfg.IR_SIMULATION_MODE,
+                measurement_payload.get("infrared_simulation_mode"),
+                cfg.IR_SIMULATION_MODE.IDEAL,
+            ),
+            infrared_n_shots=max(
+                1,
+                int(measurement_payload.get("infrared_n_shots", 1)),
+            ),
+            infrared_noise_seed=max(
+                0,
+                int(measurement_payload.get("infrared_noise_seed", 0)),
+            ),
         )
 
         reconstruction = ReconstructionState(

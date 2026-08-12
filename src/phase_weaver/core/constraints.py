@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 import numpy as np
+from scipy.interpolate import CubicHermiteSpline
 
 from .utils import smooth_overlap, trapz_uniform
 from .measurement import MeasuredFormFactor
@@ -93,11 +94,13 @@ class EnforceDCOne(FrequencyConstraint):
 
 class HighFrequencyMagnitudeDecay(FrequencyConstraint):
     """
-    Taper magnitude to zero above a chosen frequency.
+    Smoothly attenuate unmeasured high-frequency magnitudes with an exponential tail.
 
     Frequencies up to ``start_freq`` are left unchanged. Between ``start_freq``
-    and ``end_freq`` a cosine taper is applied; at and above ``end_freq`` the
-    magnitude is forced to ``floor``.
+    and ``end_freq`` the attenuation falls to ``attenuation_at_end``. It
+    continues to decay beyond ``end_freq`` rather than
+    imposing a hard cutoff, which suppresses unmeasured frequencies without a
+    spectral edge that would cause time-domain ringing.
     """
 
     def __init__(
@@ -105,6 +108,7 @@ class HighFrequencyMagnitudeDecay(FrequencyConstraint):
         start_freq: float,
         end_freq: float,
         floor: float = 0.0,
+        attenuation_at_end: float = 1e-3,
     ):
         super().__init__()
         if not np.isfinite(start_freq) or start_freq < 0:
@@ -113,12 +117,15 @@ class HighFrequencyMagnitudeDecay(FrequencyConstraint):
             raise ValueError("end_freq must be finite")
         if end_freq <= start_freq:
             raise ValueError("end_freq must be greater than start_freq")
-        if not np.isfinite(floor) or floor < 0:
-            raise ValueError("floor must be finite and non-negative")
+        if not np.isfinite(floor) or not 0.0 <= floor < 1.0:
+            raise ValueError("floor must be finite and in [0, 1)")
+        if not np.isfinite(attenuation_at_end) or not 0.0 < attenuation_at_end < 1.0:
+            raise ValueError("attenuation_at_end must be finite and in (0, 1)")
 
         self.start_freq = float(start_freq)
         self.end_freq = float(end_freq)
         self.floor = float(floor)
+        self.attenuation_at_end = float(attenuation_at_end)
 
     def apply(self, ff: "FormFactor") -> None:
         f_pos = ff.grid.f_pos
@@ -126,14 +133,12 @@ class HighFrequencyMagnitudeDecay(FrequencyConstraint):
         if not np.any(tail_mask):
             return
 
-        x = np.clip(
-            (f_pos[tail_mask] - self.start_freq)
-            / (self.end_freq - self.start_freq),
-            0.0,
-            1.0,
+        normalized_distance = (f_pos[tail_mask] - self.start_freq) / (
+            self.end_freq - self.start_freq
         )
-        taper = self.floor + (1.0 - self.floor) * 0.5 * (1.0 + np.cos(np.pi * x))
-        ff.mag[tail_mask] *= taper
+        decay = np.exp(np.log(self.attenuation_at_end) * normalized_distance**2)
+        envelope = self.floor + (1.0 - self.floor) * decay
+        ff.mag[tail_mask] *= envelope
 
 
 class ReplacePhaseEndLinear(FrequencyConstraint):
@@ -274,6 +279,8 @@ class BlendMeasuredMagnitude(FrequencyConstraint):
         measured: tuple[MeasuredFormFactor, ...],
         power: float = 2.0,
         transition_width: float | None = None,
+        transition_width_left: tuple[float, ...] | None = None,
+        transition_width_right: tuple[float, ...] | None = None,
         scale: bool = False,
     ):
         super().__init__()
@@ -289,10 +296,32 @@ class BlendMeasuredMagnitude(FrequencyConstraint):
         self.transition_width = (
             float(transition_width) if transition_width is not None else None
         )
+        self.transition_width_left = self._validate_edge_widths(
+            transition_width_left,
+            "transition_width_left",
+        )
+        self.transition_width_right = self._validate_edge_widths(
+            transition_width_right,
+            "transition_width_right",
+        )
 
         self.scale = scale
         if scale:
             self._avg_measured_mag = [mes.mag.mean() for mes in self.measured]
+
+    def _validate_edge_widths(
+        self,
+        widths: tuple[float, ...] | None,
+        name: str,
+    ) -> tuple[float, ...] | None:
+        if widths is None:
+            return None
+        if len(widths) != len(self.measured):
+            raise ValueError(f"{name} must match the number of measurements")
+        values = tuple(float(width) for width in widths)
+        if any(not np.isfinite(width) or width < 0.0 for width in values):
+            raise ValueError(f"{name} must contain finite non-negative widths")
+        return values
 
     def apply(self, ff: "FormFactor") -> None:
         for i, meas in enumerate(self.measured):
@@ -315,21 +344,39 @@ class BlendMeasuredMagnitude(FrequencyConstraint):
                 y_source=y_source,
                 power=self.power,
                 transition_width=self.transition_width,
+                transition_width_left=(
+                    None
+                    if self.transition_width_left is None
+                    else self.transition_width_left[i]
+                ),
+                transition_width_right=(
+                    None
+                    if self.transition_width_right is None
+                    else self.transition_width_right[i]
+                ),
             )
 
 
 class BlendRelativeMeasuredShape(BlendMeasuredMagnitude):
-    """Blend relative measured shapes after matching their band-average level."""
+    """Blend relative shapes after scaling, weighted by supplied uncertainty."""
 
     def __init__(
         self,
         measured: tuple[MeasuredFormFactor, ...],
         power: float = 2.0,
         transition_width: float | None = None,
+        transition_width_left: tuple[float, ...] | None = None,
+        transition_width_right: tuple[float, ...] | None = None,
         anchor_formfactor: "FormFactor | None" = None,
         fixed_scale: float | None = None,
     ):
-        super().__init__(measured, power=power, transition_width=transition_width)
+        super().__init__(
+            measured,
+            power=power,
+            transition_width=transition_width,
+            transition_width_left=transition_width_left,
+            transition_width_right=transition_width_right,
+        )
         self.anchor_formfactor = anchor_formfactor
         if fixed_scale is not None and (
             not np.isfinite(fixed_scale) or fixed_scale < 0.0
@@ -339,7 +386,23 @@ class BlendRelativeMeasuredShape(BlendMeasuredMagnitude):
 
     def apply(self, ff: "FormFactor") -> None:
         eps = np.finfo(float).eps
-        for meas in self.measured:
+        for i, meas in enumerate(self.measured):
+            current_mag = np.interp(
+                meas.freq,
+                ff.grid.f_pos,
+                ff.mag,
+            )
+            confidence = np.ones_like(meas.mag)
+            if meas.mag_std is not None:
+                snr = meas.mag / np.maximum(meas.mag_std, eps)
+                confidence = np.square(snr) / (1.0 + np.square(snr))
+            if meas.detection_limit is not None:
+                confidence = np.where(
+                    meas.mag >= meas.detection_limit,
+                    confidence,
+                    0.0,
+                )
+
             if self.fixed_scale is None:
                 anchor_ff = self.anchor_formfactor or ff
                 scale_anchor_mag = np.interp(
@@ -352,19 +415,36 @@ class BlendRelativeMeasuredShape(BlendMeasuredMagnitude):
                     & np.isfinite(scale_anchor_mag)
                     & (meas.mag > eps)
                     & (scale_anchor_mag >= 0.0)
+                    & (confidence > 0.0)
                 )
                 if not np.any(valid):
                     continue
 
-                measured_average = float(np.mean(meas.mag[valid]))
-                reconstruction_average = float(np.mean(scale_anchor_mag[valid]))
-                if measured_average <= eps:
+                if meas.mag_std is None:
+                    measured_average = float(np.mean(meas.mag[valid]))
+                    reconstruction_average = float(np.mean(scale_anchor_mag[valid]))
+                    if measured_average <= eps:
+                        continue
+                    scale = reconstruction_average / measured_average
+                else:
+                    weights = confidence[valid] / np.maximum(
+                        np.square(meas.mag_std[valid]), eps
+                    )
+                    denominator = float(np.sum(weights * np.square(meas.mag[valid])))
+                    if denominator <= eps:
+                        continue
+                    scale = float(
+                        np.sum(weights * meas.mag[valid] * scale_anchor_mag[valid])
+                        / denominator
+                    )
+                if not np.isfinite(scale) or scale < 0.0:
                     continue
-                scale = reconstruction_average / measured_average
             else:
                 scale = self.fixed_scale
 
-            y_source = meas.mag * scale
+            # Uncertain or undetected pixels retain the current reconstruction;
+            # high-SNR pixels approach the measured relative shape.
+            y_source = confidence * meas.mag * scale + (1.0 - confidence) * current_mag
             ff.mag = smooth_overlap(
                 x_target=ff.grid.f_pos,
                 y_target=ff.mag,
@@ -372,7 +452,75 @@ class BlendRelativeMeasuredShape(BlendMeasuredMagnitude):
                 y_source=y_source,
                 power=self.power,
                 transition_width=self.transition_width,
+                transition_width_left=(
+                    None
+                    if self.transition_width_left is None
+                    else self.transition_width_left[i]
+                ),
+                transition_width_right=(
+                    None
+                    if self.transition_width_right is None
+                    else self.transition_width_right[i]
+                ),
             )
+
+
+class SplineInterpolateMeasurementGaps(FrequencyConstraint):
+    """Bridge separated measured bands with a slope-matched cubic spline.
+
+    The measurement constraints run first.  This constraint then uses several
+    already-constrained FFT bins at each side of a detector gap to estimate the
+    local slopes, and fills only the unmeasured interval.  The resulting bridge
+    exactly meets both bands and has matching endpoint slopes, avoiding a step
+    between CRISP and IR while leaving all measured bins intact.
+    """
+
+    def __init__(
+        self,
+        measured: tuple[MeasuredFormFactor, ...],
+        slope_fit_points: int = 5,
+    ) -> None:
+        super().__init__()
+        if slope_fit_points < 2:
+            raise ValueError("slope_fit_points must be at least 2")
+        self.measured = measured
+        self.slope_fit_points = slope_fit_points
+
+    @staticmethod
+    def _fit_slope(x: np.ndarray, y: np.ndarray) -> float:
+        if x.size < 2 or np.ptp(x) <= 0.0:
+            return 0.0
+        return float(np.polyfit(x - x[-1], y, deg=1)[0])
+
+    def apply(self, ff: "FormFactor") -> None:
+        ordered = sorted(self.measured, key=lambda measurement: measurement.freq[0])
+        freq = ff.grid.f_pos
+
+        for left, right in zip(ordered, ordered[1:]):
+            gap_mask = (freq > left.freq[-1]) & (freq < right.freq[0])
+            if not np.any(gap_mask):
+                continue
+
+            left_bins = freq[(freq >= left.freq[0]) & (freq <= left.freq[-1])]
+            right_bins = freq[(freq >= right.freq[0]) & (freq <= right.freq[-1])]
+            if left_bins.size < 2 or right_bins.size < 2:
+                continue
+
+            left_bins = left_bins[-self.slope_fit_points :]
+            right_bins = right_bins[: self.slope_fit_points]
+            left_values = np.interp(left_bins, freq, ff.mag)
+            right_values = np.interp(right_bins, freq, ff.mag)
+            x0, x1 = left_bins[-1], right_bins[0]
+            y0, y1 = left_values[-1], right_values[0]
+            left_slope = self._fit_slope(left_bins, left_values)
+            right_slope = self._fit_slope(right_bins[::-1], right_values[::-1])
+
+            spline = CubicHermiteSpline(
+                [x0, x1],
+                [y0, y1],
+                [left_slope, right_slope],
+            )
+            ff.mag[gap_mask] = np.maximum(spline(freq[gap_mask]), 0.0)
 
 
 class CutAfterNthZeroFromPeak(TimeConstraint):

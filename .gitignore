@@ -92,5 +92,8 @@ nuitka-crash-report.xml
 *.onefile-build/
 *.onefile-dist/
 
-# export
-export.npz
+# --- Sample / measurement data (not part of committed state) ---
+*.h5
+*.hdf5
+*.npz
+test_data/

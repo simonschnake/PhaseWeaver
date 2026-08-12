@@ -449,3 +449,65 @@ Wichtige rekonstruierte oder diagnostische Properties:
 - Die positive Frequenzskala enthaelt bei Default bis `2044 THz`, nicht exakt
   `2048 THz`, weil nur `N/2` Punkte mit Schritt `2 * max_frequency / N` erzeugt werden.
 
+## PhaseWeaver-Erweiterungen aus der aelteren Python-Rekonstruktion
+
+PhaseWeaver behaelt den oben beschriebenen `|F|^2`-Eingang und das robuste
+Server-Preprocessing bei, uebernimmt aber einige numerisch hilfreiche Eigenschaften
+der aelteren Python-Implementierung:
+
+- Die interpolierte positive Frequenzskala enthaelt zusaetzlich den Nyquist-Punkt,
+  also `N/2 + 1` Samples von `0` bis einschliesslich `max_frequency`.
+- Das volle Spektrum wird als korrekt hermitesches Spektrum aufgebaut. DC und
+  Nyquist bleiben reell; nur die inneren positiven Frequenzbins werden konjugiert
+  gespiegelt. Damit ist die inverse FFT bereits vor dem ersten Projektionsschritt
+  reell und erzeugt keine kuenstlichen Langzeit-Tails durch das Verwerfen eines
+  Imaginaerteils.
+- `INPUT_FFSQ_STD` wird auf den interpolierten Betrag fortgepflanzt und fuer den
+  Low-Frequency-Gaussian-Fit als Gewicht verwendet. Der Uebergang folgt dem
+  Ocelot-2019-Verfahren: Die erste zusammenhaengende Folge von drei Kanaelen
+  unter einer adaptiven `|F|`-Schwelle bestimmt, welche fruehen Punkte durch den
+  Gaussian-Fit ersetzt werden. Bei sehr langen Bunches bleibt die Messung
+  erhalten und der Fit erweitert nur bis 0 THz.
+
+  ```text
+  sigma_|F| = sigma_|F|^2 / (2 |F|)
+  ```
+
+  Die Kovarianz des gewichteten Fits erzeugt eine Unsicherheit fuer die
+  Low-Frequency-Extrapolation. Sie wird bis in das Modulusband fortgepflanzt;
+  innerhalb des gemessenen Bandes bestimmt derselbe Fehler das erlaubte
+  Modulusband; nur die High-Frequency-Extrapolation bleibt standardmaessig exakt.
+- Einzelne bekannte defekte Detektorkanaele koennen ueber
+  `CrispReconstructionConfig.channels_to_remove` vor Sortierung und Filterung
+  explizit ausgeschlossen werden. Anders als im alten Code sind `104` und `135`
+  nicht global voreingestellt, weil diese Auswahl vom Detektor-Datensatz abhaengt.
+
+Die bisherigen Server-Regeln bleiben konfigurierbar: Mit
+`use_input_uncertainty=False` wird wieder das pauschale Band
+`modulus_error_fraction * |F|` verwendet; mit
+`enforce_extrapolated_modulus=False` bleibt der obere extrapolierte Bereich frei.
+
+## Simulierte kalibrierte CRISP-Messung in PhaseWeaver
+
+Neben der idealen Abtastung des Eingangs-Formfaktors kann PhaseWeaver eine
+detektornahe CRISP-Messung simulieren. Der Modus verwendet die 240 historischen
+Kanalmitten und die zugehoerige Response in `V/nC^2` aus dem Python-Code von 2019.
+
+Der Ablauf ist:
+
+1. Das Stromprofil wird um seinen ersten Moment zentriert und auf das historische
+   Fenster von `[-2 ps, 2 ps)` mit `1 fs` Schrittweite interpoliert.
+2. Das auf Eins normierte Profil wird Fourier-transformiert und auf die
+   CRISP-Kanalmitten interpoliert.
+3. Fuer jeden Kanal wird ein ADC-Signal `|F|^2 * charge_nC^2 * response`
+   berechnet und mit `1.2 mV / sqrt(n_shots)` elektronischem Rauschen versehen.
+4. Das Signal wird wieder zu Betrag, Betragfehler und Detektionsgrenze
+   zurueckgerechnet. Die grafische Messung zeigt den nichtnegativen Betrag;
+   die CRISP-Rekonstruktion erhaelt `|F|^2`, dessen fortgepflanzten Fehler und
+   die quadrierte Detektionsgrenze.
+
+Die Zufallszahl wird ueber einen gespeicherten Seed bestimmt. Damit bleiben Plot
+und Rekonstruktion reproduzierbar, bis `Generate new noise` gewaehlt wird. Die
+Anzahl gemittelter Shots und der Seed sind im Reconstruction-Panel und im
+exportierten NPZ-Metadatensatz vorhanden. Geladene Messungen haben weiterhin
+Vorrang vor dieser Simulation.

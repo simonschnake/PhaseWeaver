@@ -38,6 +38,13 @@ first CRISP path:
   input filtering, low/high-frequency Gaussian extrapolation, Savitzky-Golay
   smoothing, Kramers-Kronig phase, positive-peak isolation, modulus-band
   iteration, current scaling, and diagnostics.
+- Numerically improved CRISP spectrum handling inherited from the older Python
+  implementation: a properly Hermitian even-length spectrum, propagated measured
+  uncertainty in the modulus constraint, exact extrapolation constraints, and
+  optional removal of explicitly selected detector channels.
+- An opt-in calibrated CRISP detector simulation: legacy 240-channel response,
+  charge-scaled ADC signal, repeatable electronic noise, shot averaging,
+  detection limits, and reconstruction-ready `|F|^2` uncertainties.
 - Export of CRISP diagnostics alongside the ordinary plot arrays and
   reconstruction summary.
 
@@ -315,3 +322,14 @@ can use them as opt-in high-frequency relative-shape constraints, with automatic
 band-average scaling or a fixed interactive IR scale. The next step is
 calibration-aware validation and schema work rather than hiding relative IR data
 behind absolute-form-factor semantics.
+## Ocean/NIR detector model
+
+- Simulated infrared measurements can use either ideal samples or an Ocean
+  detector forward model with a 512-pixel 896--2515 nm grid, count-domain noise,
+  shot averaging, deterministic seeds, relative normalization, uncertainty, and
+  detection limits.
+- Ocean simulations and loaded Ocean spectra remain relative-shape constraints,
+  not absolute form-factor measurements.  Reconstruction weighting now uses
+  per-pixel uncertainty and ignores points below their detection limit.
+- Waterflow maps and Cor2d histories provide standard-error estimates when
+  repeated spectra are available.

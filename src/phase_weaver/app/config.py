@@ -116,6 +116,16 @@ class MEASUREMENT_MODE(Enum):
     INFRARED = "INFRARED"
 
 
+class CRISP_SIMULATION_MODE(Enum):
+    IDEAL = "Ideal samples"
+    DETECTOR = "Detector simulation"
+
+
+class IR_SIMULATION_MODE(Enum):
+    IDEAL = "Ideal samples"
+    OCEAN = "Ocean detector simulation"
+
+
 INITIAL_GAUSSIAN_SIGMA_S = 10e-15
 
 

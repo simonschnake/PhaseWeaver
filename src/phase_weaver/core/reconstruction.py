@@ -23,6 +23,7 @@ from .constraints import (
     NonNegativity,
     NormalizeArea,
     BlendMeasuredMagnitude,
+    SplineInterpolateMeasurementGaps,
 )
 
 from .measurement import MeasuredFormFactor
@@ -468,7 +469,10 @@ class GerchbergSaxton(ReconstructionAlgorithm):
             relative_measurements=relative_measurements,
             relative_anchor_formfactor=relative_anchor_formfactor,
         )
-        self.stop = self._build_stop_conditions(reconstruction_state, measurements)
+        self.stop = self._build_stop_conditions(
+            reconstruction_state,
+            measurements or relative_measurements,
+        )
 
     def run(self) -> tuple[Profile, FormFactor]:
 
@@ -548,14 +552,16 @@ class GerchbergSaxton(ReconstructionAlgorithm):
             constraints.append(ClampMagnitude())
         if "ENFORCE_DC" in selected:
             constraints.append(EnforceDCOne())
+        high_frequency_decay: HighFrequencyMagnitudeDecay | None = None
         if "HIGH_FREQ_DECAY" in selected:
             decay_bounds = _high_frequency_decay_bounds(
                 (*measurements, *relative_measurements),
                 grid,
             )
             if decay_bounds is not None:
-                constraints.append(HighFrequencyMagnitudeDecay(*decay_bounds))
+                high_frequency_decay = HighFrequencyMagnitudeDecay(*decay_bounds)
         if "BLEND_MEASURED" in selected:
+            all_measurements = (*measurements, *relative_measurements)
             constraints.append(
                 BlendMeasuredMagnitude(
                     measurements,
@@ -580,6 +586,10 @@ class GerchbergSaxton(ReconstructionAlgorithm):
                         ),
                     )
                 )
+            if len(all_measurements) > 1:
+                constraints.append(SplineInterpolateMeasurementGaps(all_measurements))
+        if high_frequency_decay is not None:
+            constraints.append(high_frequency_decay)
         return CombinedFrequencyConstraint(*constraints)
 
     def _build_stop_conditions(
@@ -619,6 +629,8 @@ class GerchbergSaxton(ReconstructionAlgorithm):
         return "+".join(reasons) if reasons else "unknown"
 
     def _measurement_error(self, ff: FormFactor) -> float:
+        if not self.measurements:
+            return 0.0
         err = np.empty(len(self.measurements), dtype=float)
         for i, meas in enumerate(self.measurements):
             mag_interp = np.interp(meas.freq, ff.grid.f_pos, ff.mag)

@@ -35,6 +35,7 @@ from phase_weaver.core.reconstruction import (
     _high_frequency_decay_bounds,
     minimum_phase_from_mag,
 )
+from phase_weaver.core.constraints import BlendRelativeMeasuredShape
 from phase_weaver.core.utils import trapz_uniform
 
 
@@ -59,6 +60,32 @@ def test_minimum_phase_from_mag_returns_finite(grid: Grid):
 
     assert phase.shape == mag.shape
     assert np.isfinite(phase).all()
+
+
+def test_relative_shape_constraint_uses_uncertainty_and_detection_limit(grid: Grid):
+    freq = grid.f_pos[10:13]
+    ff = FormFactor(
+        grid=grid,
+        mag=np.full_like(grid.f_pos, 0.5),
+        phase=np.zeros_like(grid.f_pos),
+    )
+    measured = MeasuredFormFactor(
+        freq=freq,
+        mag=np.array([1.0, 1.0, 1.0]),
+        mag_std=np.array([0.001, 100.0, 0.001]),
+        detection_limit=np.array([0.0, 0.0, 2.0]),
+    )
+
+    BlendRelativeMeasuredShape(
+        measured=(measured,),
+        fixed_scale=1.0,
+        transition_width=0.0,
+    ).apply(ff)
+
+    sampled = np.interp(freq, grid.f_pos, ff.mag)
+    assert sampled[0] == pytest.approx(1.0, rel=1e-5)
+    assert sampled[1] == pytest.approx(0.5, rel=1e-3)
+    assert sampled[2] == pytest.approx(0.5)
 
 
 def test_minimum_phase_from_mag_rejects_wrong_shape(grid: Grid):
@@ -270,8 +297,40 @@ def test_gerchberg_saxton_adds_relative_shape_constraint(grid: Grid):
     assert [type(c).__name__ for c in alg.frequency_constraints._constraints] == [
         "BlendMeasuredMagnitude",
         "BlendRelativeMeasuredShape",
+        "SplineInterpolateMeasurementGaps",
     ]
     assert alg.relative_measurements == (relative,)
+
+
+def test_gerchberg_saxton_adds_spline_bridge_for_separated_crisp_and_ir_bands(
+    grid: Grid,
+):
+    crisp = MeasuredFormFactor(
+        freq=grid.f_pos[10:20],
+        mag=np.linspace(1.0, 0.7, 10),
+    )
+    infrared = MeasuredFormFactor(
+        freq=grid.f_pos[40:50],
+        mag=np.linspace(0.5, 0.2, 10),
+    )
+    state = ReconstructionState(
+        phase_init_mode=PHASE_INIT_MODE.ZERO,
+        frequency_constraints={RECON_FREQUENCY_CONSTRAINT.BLEND_MEASURED},
+        stop_conditions={RECON_STOP_CONDITION.MAX_ITER},
+    )
+
+    alg = GerchbergSaxton(
+        grid=grid,
+        measurements=(crisp,),
+        relative_measurements=(infrared,),
+        reconstruction_state=state,
+    )
+
+    assert [type(item).__name__ for item in alg.frequency_constraints._constraints] == [
+        "BlendMeasuredMagnitude",
+        "BlendRelativeMeasuredShape",
+        "SplineInterpolateMeasurementGaps",
+    ]
 
 
 def test_relative_measurements_extend_high_frequency_decay_bounds(grid: Grid):
@@ -299,7 +358,7 @@ def test_relative_measurements_extend_high_frequency_decay_bounds(grid: Grid):
         reconstruction_state=state,
     )
 
-    decay = alg.frequency_constraints._constraints[0]
+    decay = alg.frequency_constraints._constraints[-1]
     assert type(decay).__name__ == "HighFrequencyMagnitudeDecay"
     assert decay.start_freq == relative.freq[-1]
 
@@ -533,4 +592,7 @@ def test_crisp_only_reconstruction_matches_measured_band_before_max_iter():
     )
     high_mask = _ff_recon.grid.f_pos >= high_freq
     assert np.any(high_mask)
-    assert_allclose(_ff_recon.mag[high_mask], 0.0, atol=1e-12)
+    high_tail = _ff_recon.mag[high_mask]
+    assert np.all(high_tail >= 0.0)
+    assert np.any(high_tail > 0.0)
+    assert np.max(high_tail) < 1e-5

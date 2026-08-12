@@ -178,6 +178,8 @@ def smooth_overlap(
     y_source: np.ndarray,
     transition_width: float | None = None,
     power: float = 2.0,
+    transition_width_left: float | None = None,
+    transition_width_right: float | None = None,
 ) -> np.ndarray:
     """
     Smoothly blend source data into target data on the target grid.
@@ -199,6 +201,11 @@ def smooth_overlap(
           is applied.
         - If the source contains the right end of the target, no right transition
           is applied.
+    transition_width_left, transition_width_right:
+        Optional edge-specific widths.  A supplied value takes precedence over
+        ``transition_width`` at that edge.  This is useful when two detectors
+        have a gap between their bands: taper only the two facing edges, while
+        preserving the outer edges as hard constraints.
     power:
         Shape parameter for the taper. Must be positive.
 
@@ -235,6 +242,12 @@ def smooth_overlap(
         raise ValueError("x_target must be sorted in non-decreasing order")
     if transition_width is not None and transition_width < 0:
         raise ValueError("transition_width must be non-negative")
+    for name, width in (
+        ("transition_width_left", transition_width_left),
+        ("transition_width_right", transition_width_right),
+    ):
+        if width is not None and (not np.isfinite(width) or width < 0):
+            raise ValueError(f"{name} must be finite and non-negative")
     if not np.isfinite(power) or power <= 0:
         raise ValueError("power must be positive")
 
@@ -251,20 +264,37 @@ def smooth_overlap(
     x_overlap = x_target[overlap]
     y_source_interp = np.interp(x_overlap, x_source, y_source)
 
-    if transition_width is None:
+    if transition_width is None and (
+        transition_width_left is None or transition_width_right is None
+    ):
         target_span = x_target[-1] - x_target[0]
         transition_width = 0.5 * target_span
 
     left_end_contained = x_source[0] <= x_target[0] <= x_source[-1]
     right_end_contained = x_source[0] <= x_target[-1] <= x_source[-1]
 
-    transition_width_left = 0.0 if left_end_contained else transition_width
-    transition_width_right = 0.0 if right_end_contained else transition_width
+    if left_end_contained:
+        left_width = 0.0
+    elif transition_width_left is not None:
+        left_width = transition_width_left
+    elif transition_width is not None:
+        left_width = transition_width
+    else:  # The default-width branch above makes this unreachable.
+        raise RuntimeError("missing left overlap transition width")
+
+    if right_end_contained:
+        right_width = 0.0
+    elif transition_width_right is not None:
+        right_width = transition_width_right
+    elif transition_width is not None:
+        right_width = transition_width
+    else:  # The default-width branch above makes this unreachable.
+        raise RuntimeError("missing right overlap transition width")
 
     w = overlap_weights(
         x=x_overlap,
-        transition_width_left=transition_width_left,
-        transition_width_right=transition_width_right,
+        transition_width_left=left_width,
+        transition_width_right=right_width,
         power=power,
     )
 

@@ -6,6 +6,7 @@ from phase_weaver.core.base import FormFactor, Grid, Profile
 from phase_weaver.core.constraints import (
     BlendMeasuredMagnitude,
     BlendRelativeMeasuredShape,
+    SplineInterpolateMeasurementGaps,
     ClampMagnitude,
     CenterFirstMoment,
     CombinedFrequencyConstraint,
@@ -80,7 +81,7 @@ def test_frequency_constraints_can_be_combined_and_applied(grid):
     assert np.all(np.isfinite(ff.mag))
 
 
-def test_high_frequency_magnitude_decay_tapers_tail_to_zero(grid):
+def test_high_frequency_magnitude_decay_uses_smooth_exponential_envelope(grid):
     mag = np.ones(grid.N // 2 + 1, dtype=float)
     phase = np.zeros_like(mag)
     ff = FormFactor(grid=grid, mag=mag.copy(), phase=phase.copy())
@@ -95,7 +96,9 @@ def test_high_frequency_magnitude_decay_tapers_tail_to_zero(grid):
 
     assert_allclose(ff.mag[grid.f_pos <= start_freq], 1.0)
     assert np.all(ff.mag[(grid.f_pos > start_freq) & (grid.f_pos < end_freq)] < 1.0)
-    assert_allclose(ff.mag[grid.f_pos >= end_freq], 0.0)
+    end_index = np.flatnonzero(grid.f_pos == end_freq)[0]
+    assert ff.mag[end_index] == pytest.approx(1e-3)
+    assert 0.0 < ff.mag[end_index + 1] < ff.mag[end_index]
 
 
 def test_high_frequency_magnitude_decay_validates_inputs():
@@ -105,8 +108,15 @@ def test_high_frequency_magnitude_decay_validates_inputs():
     with pytest.raises(ValueError, match="end_freq must be greater than start_freq"):
         HighFrequencyMagnitudeDecay(start_freq=2.0, end_freq=2.0)
 
-    with pytest.raises(ValueError, match="floor must be finite and non-negative"):
+    with pytest.raises(ValueError, match=r"floor must be finite and in \[0, 1\)"):
         HighFrequencyMagnitudeDecay(start_freq=1.0, end_freq=2.0, floor=-1.0)
+
+    with pytest.raises(ValueError, match="attenuation_at_end"):
+        HighFrequencyMagnitudeDecay(
+            start_freq=1.0,
+            end_freq=2.0,
+            attenuation_at_end=1.0,
+        )
 
     with pytest.raises(ValueError, match="end_freq must be finite"):
         HighFrequencyMagnitudeDecay(start_freq=1.0, end_freq=np.inf)
@@ -147,6 +157,54 @@ def test_blend_relative_measured_shape_scales_to_band_average():
     assert ff.mag[grid.f_pos == 14.0][0] == pytest.approx(
         20.0 * np.mean(original_mag[band]) / np.mean(measured.mag)
     )
+
+
+def test_blend_measured_magnitude_can_taper_one_band_edge():
+    grid = Grid.from_df_fmax(df=1.0, f_max=6.0, snap_pow2=False)
+    ff = FormFactor(
+        grid=grid,
+        mag=np.zeros_like(grid.f_pos),
+        phase=np.zeros_like(grid.f_pos),
+    )
+    measured = MeasuredFormFactor(
+        freq=grid.f_pos[:5],
+        mag=np.ones(5),
+    )
+
+    BlendMeasuredMagnitude(
+        (measured,),
+        transition_width=0.0,
+        transition_width_left=(0.0,),
+        transition_width_right=(2.0,),
+    ).apply(ff)
+
+    assert ff.mag[0] == pytest.approx(1.0)
+    assert 0.0 < ff.mag[3] < 1.0
+    assert ff.mag[4] == pytest.approx(0.0)
+
+
+def test_spline_interpolate_measurement_gaps_bridges_measured_band_endpoints():
+    grid = Grid.from_df_fmax(df=1.0, f_max=20.0, snap_pow2=False)
+    ff = FormFactor(
+        grid=grid,
+        mag=np.zeros_like(grid.f_pos),
+        phase=np.zeros_like(grid.f_pos),
+    )
+    crisp = MeasuredFormFactor(
+        freq=grid.f_pos[:6],
+        mag=np.ones(6),
+    )
+    infrared = MeasuredFormFactor(
+        freq=grid.f_pos[10:],
+        mag=np.full(len(grid.f_pos[10:]), 0.2),
+    )
+
+    BlendMeasuredMagnitude((crisp, infrared), transition_width=0.0).apply(ff)
+    SplineInterpolateMeasurementGaps((crisp, infrared)).apply(ff)
+
+    assert ff.mag[5] == pytest.approx(1.0)
+    assert ff.mag[10] == pytest.approx(0.2)
+    assert np.all((ff.mag[6:10] > 0.2) & (ff.mag[6:10] < 1.0))
 
 
 def test_blend_relative_measured_shape_can_use_fixed_anchor_formfactor():

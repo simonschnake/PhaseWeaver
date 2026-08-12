@@ -6,7 +6,9 @@ from phase_weaver.model.profiles import AsymSuperGaussParams, asymmetric_super_g
 
 from .config import (
     CHARGE_C,
+    CRISP_SIMULATION_MODE,
     DT,
+    IR_SIMULATION_MODE,
     PHASE_INIT_MODE,
     RECONSTRUCTION_ALGORITHM,
     RECONSTRUCTION_ALGORITHM_DEFAULT,
@@ -142,6 +144,12 @@ class MeasurementState:
     infrared: bool = False
     crisp_scale: float = 1.0
     infrared_scale: float = 1.0
+    crisp_simulation_mode: CRISP_SIMULATION_MODE = CRISP_SIMULATION_MODE.IDEAL
+    crisp_n_shots: int = 1
+    crisp_noise_seed: int = 0
+    infrared_simulation_mode: IR_SIMULATION_MODE = IR_SIMULATION_MODE.IDEAL
+    infrared_n_shots: int = 1
+    infrared_noise_seed: int = 0
 
 
 @dataclass

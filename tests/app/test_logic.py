@@ -3,6 +3,8 @@ import pytest
 from numpy.testing import assert_allclose
 
 from phase_weaver.app.config import (
+    CRISP_SIMULATION_MODE,
+    IR_SIMULATION_MODE,
     IR_MAX_HZ,
     IR_MIN_HZ,
     PHASE_INIT_MODE,
@@ -639,9 +641,39 @@ def test_app_logic_missing_ocean_nir_relative_constraint_fails_clearly():
 
     with pytest.raises(
         ValueError,
-        match="No IR measurement loaded for extended CRISP reconstruction",
+        match="No relative IR measurement is available",
     ):
         logic.relative_measurements_for_reconstruction(reconstruction_state)
+
+
+def test_app_logic_uses_ocean_detector_simulation_with_loaded_crisp_measurement():
+    logic = AppLogic()
+    logic.loaded_measurements = (
+        LoadedMeasurement(
+            label="Loaded CRISP",
+            measured=MeasuredFormFactor(
+                freq=np.array([10e12, 20e12]),
+                mag=np.array([0.9, 0.7]),
+            ),
+            kind="crisp",
+            calibration="absolute_or_calibrated",
+        ),
+    )
+    profile = ProfileModel(ProfileModelState()).compute_profile()
+    form_factor = profile.to_form_factor()
+
+    relative = logic.relative_measurements_for_reconstruction(
+        ReconstructionState(use_ir_relative_constraint=True),
+        measurement_state=MeasurementState(
+            infrared=True,
+            infrared_simulation_mode=IR_SIMULATION_MODE.OCEAN,
+        ),
+        form_factor=form_factor,
+    )
+
+    assert len(relative) == 1
+    assert np.all(relative[0].freq >= IR_MIN_HZ)
+    assert np.all(relative[0].freq <= IR_MAX_HZ)
 
 
 def test_app_logic_crisp_algorithm_can_extend_with_ocean_nir():
@@ -679,7 +711,6 @@ def test_app_logic_crisp_algorithm_can_extend_with_ocean_nir():
         reconstruction=ReconstructionState(
             algorithm=RECONSTRUCTION_ALGORITHM.CRISP,
             phase_init_mode=PHASE_INIT_MODE.ZERO,
-            use_ir_relative_constraint=True,
         ),
     )
     prof = ProfileModel(state.scenario).compute_profile()
@@ -891,6 +922,213 @@ def test_app_logic_runs_crisp_algorithm_from_simulated_crisp_band():
     assert summary.iterations <= 20
 
 
+def test_crisp_algorithm_automatically_extends_with_enabled_simulated_ir_band():
+    logic = AppLogic()
+    state = ControlsState(
+        scenario=ProfileModelState(),
+        measurement=MeasurementState(crisp=True, infrared=True),
+        reconstruction=ReconstructionState(
+            algorithm=RECONSTRUCTION_ALGORITHM.CRISP,
+        ),
+    )
+
+    profile, form_factor, measurements = logic.compute_initial(state)
+    _, _, summary = logic.compute_reconstruction(
+        grid=profile.grid,
+        measurements=measurements,
+        controls_state=state,
+        ff_input=form_factor,
+    )
+
+    assert summary.algorithm == "CRISP + IR"
+    assert summary.ir_relative_constraint_used is False
+    assert summary.relative_measurement_count == 0
+
+
+def test_app_logic_uses_detector_simulation_for_visible_and_crisp_input():
+    logic = AppLogic()
+    state = ControlsState(
+        scenario=ProfileModelState(),
+        measurement=MeasurementState(
+            crisp=True,
+            crisp_simulation_mode=CRISP_SIMULATION_MODE.DETECTOR,
+            crisp_n_shots=4,
+            crisp_noise_seed=17,
+        ),
+        reconstruction=ReconstructionState(
+            algorithm=RECONSTRUCTION_ALGORITHM.CRISP,
+        ),
+    )
+    prof_input, ff_input, measurements = logic.compute_initial(state)
+    visible = logic.visible_measurements(
+        ff_input,
+        state.measurement,
+        input_profile=prof_input,
+    )
+    active, source = logic.active_measurements(
+        ff_input,
+        state.measurement,
+        input_profile=prof_input,
+    )
+    crisp_input = logic._active_crisp_input(
+        active,
+        state,
+        measurement_source=source,
+        input_profile=prof_input,
+    )
+
+    assert len(measurements) == len(active) == 1
+    assert visible[0].label == "CRISP detector simulation"
+    assert visible[0].measured.freq.shape == (240,)
+    assert_allclose(active[0].mag, visible[0].measured.mag)
+    assert_allclose(crisp_input.ffsq, active[0].mag**2)
+    assert np.all(crisp_input.ffsq_std > 0.0)
+    assert np.all(crisp_input.detection_limit > 0.0)
+
+
+def test_detector_simulation_crisp_reconstruction_runs_with_simulated_input():
+    logic = AppLogic()
+    state = ControlsState(
+        scenario=ProfileModelState(),
+        measurement=MeasurementState(
+            crisp=True,
+            crisp_simulation_mode=CRISP_SIMULATION_MODE.DETECTOR,
+            crisp_noise_seed=3,
+        ),
+        reconstruction=ReconstructionState(
+            algorithm=RECONSTRUCTION_ALGORITHM.CRISP,
+        ),
+    )
+    prof_input, ff_input, measurements = logic.compute_initial(state)
+
+    profile, form_factor, summary = logic.compute_reconstruction(
+        grid=prof_input.grid,
+        measurements=measurements,
+        controls_state=state,
+        ff_input=ff_input,
+        input_profile=prof_input,
+    )
+
+    assert summary.algorithm == "CRISP"
+    assert summary.status == "finished"
+    assert summary.crisp_diagnostics is not None
+    assert profile.grid.N == 1024
+    assert form_factor.mag.shape == (513,)
+
+
+def test_detector_simulation_is_accepted_by_gerchberg_saxton():
+    logic = AppLogic()
+    state = ControlsState(
+        scenario=ProfileModelState(),
+        measurement=MeasurementState(
+            crisp=True,
+            crisp_simulation_mode=CRISP_SIMULATION_MODE.DETECTOR,
+            crisp_noise_seed=9,
+        ),
+        reconstruction=ReconstructionState(),
+    )
+    prof_input, ff_input, measurements = logic.compute_initial(state)
+
+    profile, form_factor, summary = logic.compute_reconstruction(
+        grid=prof_input.grid,
+        measurements=measurements,
+        controls_state=state,
+        ff_input=ff_input,
+        input_profile=prof_input,
+    )
+
+    assert summary.algorithm == "Gerchberg-Saxton"
+    assert summary.status == "finished"
+    assert profile.grid == prof_input.grid
+    assert form_factor.mag.shape == ff_input.mag.shape
+
+
+def test_ocean_detector_simulation_is_relative_and_carries_uncertainty():
+    logic = AppLogic()
+    state = ControlsState(
+        scenario=ProfileModelState(),
+        measurement=MeasurementState(
+            crisp=True,
+            infrared=True,
+            infrared_simulation_mode=IR_SIMULATION_MODE.OCEAN,
+            infrared_n_shots=9,
+            infrared_noise_seed=12,
+        ),
+        reconstruction=ReconstructionState(use_ir_relative_constraint=True),
+    )
+    profile = ProfileModel(state.scenario).compute_profile()
+    form_factor = profile.to_form_factor()
+
+    visible = logic.visible_measurements(
+        form_factor,
+        state.measurement,
+        input_profile=profile,
+    )
+    active, source = logic.active_measurements(
+        form_factor,
+        state.measurement,
+        input_profile=profile,
+    )
+    relative = logic.relative_measurements_for_reconstruction(
+        state.reconstruction,
+        measurement_state=state.measurement,
+        form_factor=form_factor,
+    )
+
+    assert source == "simulated"
+    assert [item.label for item in visible] == [
+        "CRISP",
+        "Ocean NIR detector simulation",
+    ]
+    assert visible[1].kind == "ocean_nir"
+    assert visible[1].calibration == "simulated_relative_shape"
+    assert visible[1].use_in_reconstruction is False
+    assert len(active) == 1
+    assert len(relative) == 1
+    assert relative[0].freq.size < 512
+    assert np.all(relative[0].freq >= IR_MIN_HZ)
+    assert np.all(relative[0].freq <= IR_MAX_HZ)
+    assert relative[0].mag_std is not None
+    assert relative[0].detection_limit is not None
+    assert np.all(relative[0].mag_std > 0.0)
+
+
+def test_ocean_detector_relative_constraint_runs_with_crisp_reconstruction():
+    logic = AppLogic()
+    state = ControlsState(
+        scenario=ProfileModelState(),
+        measurement=MeasurementState(
+            crisp=True,
+            infrared=True,
+            infrared_simulation_mode=IR_SIMULATION_MODE.OCEAN,
+            infrared_n_shots=4,
+            infrared_noise_seed=5,
+        ),
+        reconstruction=ReconstructionState(
+            algorithm=RECONSTRUCTION_ALGORITHM.CRISP,
+        ),
+    )
+    profile, form_factor, _ = logic.compute_initial(state)
+    active, source = logic.active_measurements(
+        form_factor,
+        state.measurement,
+        input_profile=profile,
+    )
+
+    _, _, summary = logic.compute_reconstruction(
+        grid=profile.grid,
+        measurements=active,
+        controls_state=state,
+        ff_input=form_factor,
+        measurement_source=source,
+        input_profile=profile,
+    )
+
+    assert summary.algorithm == "CRISP + IR"
+    assert summary.ir_relative_constraint_used is True
+    assert summary.relative_measurement_count == 1
+
+
 def test_export_npz_includes_crisp_diagnostics(tmp_path):
     logic = AppLogic()
     state = ControlsState(
@@ -919,7 +1157,17 @@ def test_export_npz_includes_crisp_diagnostics(tmp_path):
     with np.load(path) as data:
         assert data["reconstruction_algorithm"] == "CRISP"
         assert data["crisp_num_iterations"] == summary.iterations
-        assert data["crisp_interpolated_ffabs"].shape == (512,)
+        assert data["crisp_intermediate_ffsq_std"].shape == data[
+            "crisp_intermediate_ffsq"
+        ].shape
+        assert data["crisp_interpolated_ffabs"].shape == (513,)
+        assert data["crisp_interpolated_ffabs_error"].shape == (513,)
+        assert data["measurement_crisp_simulation_mode"] == "Ideal samples"
+        assert data["measurement_crisp_n_shots"] == 1
+        assert data["measurement_crisp_noise_seed"] == 0
+        assert data["measurement_infrared_simulation_mode"] == "Ideal samples"
+        assert data["measurement_infrared_n_shots"] == 1
+        assert data["measurement_infrared_noise_seed"] == 0
 
 
 def test_app_logic_export_writes_measurements_and_summary(tmp_path):

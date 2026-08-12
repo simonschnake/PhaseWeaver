@@ -351,3 +351,30 @@ Ocean NIR shape constraint
 Until a real response calibration is available, the Ocean data is best used to
 shape the high-frequency reconstruction band rather than to set the absolute
 form-factor amplitude.
+
+## Implemented Ocean Detector Simulation
+
+PhaseWeaver now offers `Ocean detector simulation` in addition to ideal IR
+samples.  The forward model is intentionally relative and uses:
+
+- 512 pixels on an approximate 896--2515 nm wavelength grid
+- sampling of the input profile's `|F|^2` on that grid
+- arbitrary count-domain signal scaling, a fixed dark level, photon noise,
+  electronic read noise, ADC clipping, and configurable shot averaging
+- deterministic noise from a user-visible seed
+- dark subtraction followed by square-root and 95th-percentile normalization
+- propagated relative-`|F|` uncertainty and a three-sigma detection limit
+
+The numerical count/noise defaults are generic model parameters, not a measured
+calibration of the installed spectrometer or beamline.  Accordingly, simulated
+Ocean data are excluded from the absolute magnitude constraint and enter only
+through `Use IR as relative constraint`.
+
+The relative constraint uses the uncertainty at each pixel.  High-SNR points
+closely guide the reconstructed shape; low-SNR points have less influence, and
+points below the detection limit do not overwrite the reconstruction.
+
+For recorded data, Cor2d spectrum histories and Waterflow maps are used to
+estimate the standard error of the averaged intensity where those repeated
+spectra are present.  That error is propagated through the square root and used
+by the same uncertainty-weighted relative constraint.

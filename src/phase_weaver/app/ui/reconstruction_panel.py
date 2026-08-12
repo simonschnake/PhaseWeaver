@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSlider,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -44,6 +45,44 @@ class ReconstructionPanel(QWidget):
 
         self.measurement_box = MultiOptionSelectorBox(
             title="Measurements", enum_cls=cfg.MEASUREMENT_MODE
+        )
+        self.crisp_simulation_box = OptionSelectorBox(
+            "Simulated CRISP",
+            enum_cls=cfg.CRISP_SIMULATION_MODE,
+            default=cfg.CRISP_SIMULATION_MODE.IDEAL,
+        )
+        self.crisp_shots_spin = QSpinBox()
+        self.crisp_shots_spin.setRange(1, 100_000)
+        self.crisp_shots_spin.setValue(1)
+        self.crisp_shots_spin.valueChanged.connect(lambda _value: self.changed.emit())
+        self.crisp_noise_seed_spin = QSpinBox()
+        self.crisp_noise_seed_spin.setRange(0, 2_147_483_647)
+        self.crisp_noise_seed_spin.setValue(0)
+        self.crisp_noise_seed_spin.valueChanged.connect(
+            lambda _value: self.changed.emit()
+        )
+        self.regenerate_crisp_noise_button = QPushButton("Generate new noise")
+        self.regenerate_crisp_noise_button.clicked.connect(self._regenerate_crisp_noise)
+        self.infrared_simulation_box = OptionSelectorBox(
+            "Simulated IR",
+            enum_cls=cfg.IR_SIMULATION_MODE,
+            default=cfg.IR_SIMULATION_MODE.IDEAL,
+        )
+        self.infrared_shots_spin = QSpinBox()
+        self.infrared_shots_spin.setRange(1, 100_000)
+        self.infrared_shots_spin.setValue(1)
+        self.infrared_shots_spin.valueChanged.connect(
+            lambda _value: self.changed.emit()
+        )
+        self.infrared_noise_seed_spin = QSpinBox()
+        self.infrared_noise_seed_spin.setRange(0, 2_147_483_647)
+        self.infrared_noise_seed_spin.setValue(0)
+        self.infrared_noise_seed_spin.valueChanged.connect(
+            lambda _value: self.changed.emit()
+        )
+        self.regenerate_infrared_noise_button = QPushButton("Generate new noise")
+        self.regenerate_infrared_noise_button.clicked.connect(
+            self._regenerate_infrared_noise
         )
         self.time_constraint_box = MultiOptionSelectorBox(
             title="Time Constraints",
@@ -86,6 +125,8 @@ class ReconstructionPanel(QWidget):
             self.algorithm_box,
             self.phase_init_box,
             self.measurement_box,
+            self.crisp_simulation_box,
+            self.infrared_simulation_box,
             self.time_constraint_box,
             self.frequency_constraint_box,
             self.stop_condition_box,
@@ -99,6 +140,24 @@ class ReconstructionPanel(QWidget):
         layout.addWidget(self.algorithm_box)
         layout.addWidget(self.phase_init_box)
         layout.addWidget(self.measurement_box)
+        layout.addWidget(self.crisp_simulation_box)
+        crisp_simulation_layout = QHBoxLayout()
+        crisp_simulation_layout.addWidget(QLabel("CRISP shots"))
+        crisp_simulation_layout.addWidget(self.crisp_shots_spin)
+        crisp_simulation_layout.addWidget(QLabel("Noise seed"))
+        crisp_simulation_layout.addWidget(self.crisp_noise_seed_spin)
+        crisp_simulation_layout.addWidget(self.regenerate_crisp_noise_button)
+        layout.addLayout(crisp_simulation_layout)
+        layout.addWidget(self.infrared_simulation_box)
+        infrared_simulation_layout = QHBoxLayout()
+        infrared_simulation_layout.addWidget(QLabel("IR shots"))
+        infrared_simulation_layout.addWidget(self.infrared_shots_spin)
+        infrared_simulation_layout.addWidget(QLabel("Noise seed"))
+        infrared_simulation_layout.addWidget(self.infrared_noise_seed_spin)
+        infrared_simulation_layout.addWidget(
+            self.regenerate_infrared_noise_button
+        )
+        layout.addLayout(infrared_simulation_layout)
         layout.addWidget(self.time_constraint_box)
         layout.addWidget(self.frequency_constraint_box)
         layout.addWidget(self.stop_condition_box)
@@ -172,7 +231,20 @@ class ReconstructionPanel(QWidget):
         self.stop_condition_box.selected_modes = set(state.stop_conditions)
 
     def get_measurement_state(self) -> MeasurementState:
-        meas_state = MeasurementState()
+        meas_state = MeasurementState(
+            crisp_simulation_mode=cast(
+                cfg.CRISP_SIMULATION_MODE,
+                self.crisp_simulation_box.mode,
+            ),
+            crisp_n_shots=self.crisp_shots_spin.value(),
+            crisp_noise_seed=self.crisp_noise_seed_spin.value(),
+            infrared_simulation_mode=cast(
+                cfg.IR_SIMULATION_MODE,
+                self.infrared_simulation_box.mode,
+            ),
+            infrared_n_shots=self.infrared_shots_spin.value(),
+            infrared_noise_seed=self.infrared_noise_seed_spin.value(),
+        )
         for mode in self.measurement_box.selected_modes:
             if mode == cfg.MEASUREMENT_MODE.CRISP:
                 meas_state.crisp = True
@@ -182,12 +254,30 @@ class ReconstructionPanel(QWidget):
         return meas_state
 
     def set_measurement_state(self, state: MeasurementState) -> None:
+        self.crisp_simulation_box.mode = state.crisp_simulation_mode
+        self.crisp_shots_spin.setValue(state.crisp_n_shots)
+        self.crisp_noise_seed_spin.setValue(state.crisp_noise_seed)
+        self.infrared_simulation_box.mode = state.infrared_simulation_mode
+        self.infrared_shots_spin.setValue(state.infrared_n_shots)
+        self.infrared_noise_seed_spin.setValue(state.infrared_noise_seed)
         modes = set()
         if state.crisp:
             modes.add(cfg.MEASUREMENT_MODE.CRISP)
         if state.infrared:
             modes.add(cfg.MEASUREMENT_MODE.INFRARED)
         self.measurement_box.selected_modes = modes
+
+    def _regenerate_crisp_noise(self) -> None:
+        next_seed = self.crisp_noise_seed_spin.value() + 1
+        if next_seed > self.crisp_noise_seed_spin.maximum():
+            next_seed = 0
+        self.crisp_noise_seed_spin.setValue(next_seed)
+
+    def _regenerate_infrared_noise(self) -> None:
+        next_seed = self.infrared_noise_seed_spin.value() + 1
+        if next_seed > self.infrared_noise_seed_spin.maximum():
+            next_seed = 0
+        self.infrared_noise_seed_spin.setValue(next_seed)
 
     def is_auto_reconstruction_enabled(self) -> bool:
         return self.auto_reconstruct_button.isChecked()

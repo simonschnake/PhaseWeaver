@@ -11,10 +11,15 @@ from phase_weaver.core.crisp_reconstruction import (
     CrispReconstructionConfig,
     CrispReconstructionInput,
     _replace_modulus_outside_band,
+    build_crisp_full_spectrum,
     center_maximum,
     extrapolate_crisp_ffsq,
+    extrapolate_crisp_ffsq_with_uncertainty,
     fit_low_frequency_sigma,
+    fit_ocelot_low_frequency_gaussian,
     high_frequency_sigma,
+    interpolate_crisp_ffabs,
+    interpolate_crisp_ffabs_error,
     isolate_positive_maximum,
     kramers_kronig_phase,
     preprocess_crisp_input,
@@ -51,6 +56,24 @@ def test_preprocess_sorts_masks_and_applies_bad_run_cutoff():
     assert_allclose(pre.ffsq_std, 0.2 * pre.ffsq)
 
 
+def test_preprocess_can_remove_explicit_detector_channels():
+    freq_hz = np.arange(1.0, 31.0) * 1e12
+    ffsq = np.linspace(1.0, 0.2, len(freq_hz))
+    config = CrispReconstructionConfig(
+        min_input_points=20,
+        channels_to_remove=(8, 12),
+    )
+
+    pre = preprocess_crisp_input(
+        CrispReconstructionInput(freq_hz=freq_hz, ffsq=ffsq),
+        config,
+    )
+
+    assert pre.num_input_points == 30
+    assert 9.0 not in pre.freq_thz
+    assert 13.0 not in pre.freq_thz
+
+
 def test_gaussian_fits_and_extrapolation_are_finite():
     freq = np.linspace(1.0, 50.0, 120)
     sigma = 12.0
@@ -71,6 +94,42 @@ def test_gaussian_fits_and_extrapolation_are_finite():
     assert np.all(np.isfinite(inter_ffsq))
 
 
+def test_ocelot_low_frequency_fit_uses_weighted_magnitude_handoff():
+    freq = np.linspace(0.5, 60.0, 120)
+    sigma = 8.0
+    ffabs = np.exp(-0.5 * (freq / sigma) ** 2)
+    ffsq = ffabs**2
+    ffsq[1] = 0.01
+    ffsq_std = 0.05 * ffabs**2
+    ffsq_std[1] = 10.0
+    config = CrispReconstructionConfig(min_input_points=100)
+    pre = preprocess_crisp_input(
+        CrispReconstructionInput(
+            freq_hz=freq * 1e12,
+            ffsq=ffsq,
+            ffsq_std=ffsq_std,
+        ),
+        config,
+    )
+
+    low_fit = fit_ocelot_low_frequency_gaussian(
+        pre.freq_thz,
+        pre.ffsq,
+        pre.ffsq_std,
+    )
+    inter_freq, inter_ffsq, inter_ffsq_std, _ = (
+        extrapolate_crisp_ffsq_with_uncertainty(pre, config)
+    )
+
+    assert low_fit.sigma_thz == pytest.approx(sigma, rel=0.05)
+    assert low_fit.replacement_start > 0
+    assert inter_freq[0] == 0.0
+    low_extension = inter_freq < pre.freq_thz[low_fit.replacement_start]
+    assert np.all(inter_ffsq_std[low_extension] >= 0.0)
+    assert np.any(inter_ffsq_std[low_extension] > 0.0)
+    assert_allclose(inter_ffsq_std[-10:], 0.0)
+
+
 def test_smooth_intermediate_ffsq_keeps_four_edge_samples():
     ffsq = np.linspace(0.0, 1.0, 21)
     ffsq[10] = 0.0
@@ -80,6 +139,74 @@ def test_smooth_intermediate_ffsq_keeps_four_edge_samples():
     assert_allclose(smoothed[:4], ffsq[:4])
     assert_allclose(smoothed[-4:], ffsq[-4:])
     assert np.all((smoothed >= 0.0) & (smoothed <= 1.0))
+
+
+def test_interpolated_error_uses_measurements_and_exact_extrapolation():
+    freq = np.linspace(1.0, 50.0, 120)
+    ffsq = np.exp(-0.5 * (freq / 12.0) ** 2)
+    supplied_std = 0.4 * ffsq
+    config = CrispReconstructionConfig(min_input_points=100)
+    pre = preprocess_crisp_input(
+        CrispReconstructionInput(
+            freq_hz=freq * 1e12,
+            ffsq=ffsq,
+            ffsq_std=supplied_std,
+        ),
+        config,
+    )
+    inter_freq, inter_ffsq, _ = extrapolate_crisp_ffsq(pre, config)
+    target_freq, ffabs, _ = interpolate_crisp_ffabs(
+        inter_freq,
+        inter_ffsq,
+        pre.max_input_frequency_thz,
+        config,
+    )
+
+    error = interpolate_crisp_ffabs_error(target_freq, ffabs, pre)
+    measured = (target_freq >= pre.freq_thz[0]) & (
+        target_freq <= pre.freq_thz[-1]
+    )
+
+    assert np.all(error[measured] > 0.0)
+    assert_allclose(error[~measured], 0.0)
+
+
+def test_interpolated_error_includes_low_frequency_fit_uncertainty():
+    freq = np.linspace(0.5, 60.0, 120)
+    ffabs = np.exp(-0.5 * (freq / 8.0) ** 2)
+    config = CrispReconstructionConfig(
+        min_input_points=100,
+        num_output_points=1024,
+        max_frequency_thz=60.0,
+    )
+    pre = preprocess_crisp_input(
+        CrispReconstructionInput(
+            freq_hz=freq * 1e12,
+            ffsq=ffabs**2,
+            ffsq_std=0.1 * ffabs**2,
+        ),
+        config,
+    )
+    inter_freq, inter_ffsq, inter_ffsq_std, _ = (
+        extrapolate_crisp_ffsq_with_uncertainty(pre, config)
+    )
+    target_freq, interp_ffabs, _ = interpolate_crisp_ffabs(
+        inter_freq,
+        inter_ffsq,
+        pre.max_input_frequency_thz,
+        config,
+    )
+
+    error = interpolate_crisp_ffabs_error(
+        target_freq,
+        interp_ffabs,
+        pre,
+        intermediate_frequencies_thz=inter_freq,
+        intermediate_ffsq_std=inter_ffsq_std,
+    )
+
+    low_extension = target_freq < pre.freq_thz[0]
+    assert np.any(error[low_extension] > 0.0)
 
 
 def test_kramers_kronig_phase_fills_nonpositive_tail():
@@ -92,6 +219,20 @@ def test_kramers_kronig_phase_fills_nonpositive_tail():
     assert phase.shape == mag.shape
     assert np.isfinite(phase).all()
     assert_allclose(phase[9:], phase[8])
+
+
+def test_full_spectrum_is_hermitian_and_has_real_inverse():
+    ffabs = np.linspace(1.0, 0.1, 9)
+    phase = np.linspace(0.0, 0.7, 9)
+
+    spectrum = build_crisp_full_spectrum(ffabs, phase)
+
+    assert spectrum.shape == (16,)
+    assert spectrum[0].imag == 0.0
+    assert spectrum[8].imag == 0.0
+    for i in range(1, len(spectrum)):
+        assert spectrum[i] == pytest.approx(np.conj(spectrum[-i]))
+    assert_allclose(np.fft.ifft(spectrum).imag, 0.0, atol=1e-15)
 
 
 def test_positive_peak_isolation_and_centering():
@@ -129,9 +270,40 @@ def test_crisp_reconstruction_runs_on_synthetic_input():
 
     assert result.profile.grid.N == 1024
     assert result.form_factor.mag.shape == (513,)
+    assert result.diagnostics.interpolated_ffabs.shape == (513,)
+    assert result.diagnostics.interpolated_ffabs_error.shape == (513,)
     assert result.diagnostics.num_iterations <= 20
     assert np.all(np.isfinite(result.profile.values))
     assert result.diagnostics.peak_current_a > 0.0
+
+
+def test_gaussian_reconstruction_does_not_grow_long_artificial_tails():
+    freq = np.geomspace(0.7, 58.0, 240)
+    sigma_frequency_thz = 15.0
+    ffabs = np.exp(-0.5 * (freq / sigma_frequency_thz) ** 2)
+    config = CrispReconstructionConfig(
+        num_output_points=2048,
+        max_frequency_thz=500.0,
+    )
+    result = CrispReconstruction(
+        CrispReconstructionInput(
+            freq_hz=freq * 1e12,
+            ffsq=ffabs**2,
+            ffsq_std=0.4 * ffabs**2,
+            detection_limit=np.full_like(ffabs, 1e-12),
+            charge_c=250e-12,
+        ),
+        config,
+    ).run()
+
+    expected_rms_fs = 1e15 / (2.0 * np.pi * sigma_frequency_thz * 1e12)
+    current_a = result.profile.values * result.profile.charge
+    outside = np.abs(result.profile.grid.t * 1e15) > 50.0
+
+    assert result.diagnostics.rms_width_fs == pytest.approx(
+        expected_rms_fs, rel=0.02
+    )
+    assert np.sum(current_a[outside]) / np.sum(current_a) < 1e-3
 
 
 def test_crisp_reconstruction_runs_on_reference_h5_when_available():
