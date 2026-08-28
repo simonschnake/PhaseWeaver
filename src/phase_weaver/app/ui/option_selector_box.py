@@ -43,7 +43,10 @@ class _BaseOptionSelectorBox(QGroupBox):
                 f"unknown option {option!r}; expected one of {list(self._enum_cls)!r}"
             )
 
-        return self._group.button(button_id)
+        button = self._group.button(button_id)
+        if not isinstance(button, QPushButton):
+            raise RuntimeError("option button is missing")
+        return button
 
 
 class OptionSelectorBox(_BaseOptionSelectorBox):

@@ -50,7 +50,7 @@ class BandLimitBox(QGroupBox):
     def _make_slider_spin(self, min_v: float, max_v: float, step: float, init: float):
         n_ticks = max(int(round((max_v - min_v) / step)), 1)
 
-        slider = QSlider(Qt.Horizontal)
+        slider = QSlider(Qt.Orientation.Horizontal)
         slider.setRange(0, n_ticks)
         slider.setProperty("_min_v", float(min_v))
         slider.setProperty("_step", float(step))

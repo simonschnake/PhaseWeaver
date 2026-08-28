@@ -4,7 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from math import ceil, log2
-from typing import Tuple
+from typing import Self, Tuple
 
 import numpy as np
 
@@ -115,7 +115,7 @@ class Profile:
         form_factor: FormFactor,
         transform: Transform | None = None,
         charge: float | None = None,
-    ) -> CurrentProfile:
+    ) -> Self:
         if transform is None:
             transform = DCPhysicalRFFT()
         grid, values = transform.form_factor_to_profile(form_factor)
@@ -221,7 +221,7 @@ class Transform(ABC):
 
     @abstractmethod
     def profile_to_form_factor(
-        self, profile: CurrentProfile
+        self, profile: Profile
     ) -> Tuple[Grid, np.ndarray, np.ndarray]:
         raise NotImplementedError
 
@@ -244,7 +244,7 @@ class DCPhysicalRFFT(Transform):
         self.eps_mag = eps_mag if eps_mag is not None else np.finfo(float).eps
 
     def profile_to_form_factor(
-        self, profile: CurrentProfile
+        self, profile: Profile
     ) -> Tuple[Grid, np.ndarray, np.ndarray]:
         x_shift = np.fft.ifftshift(profile.values)
         F_pos = np.fft.rfft(x_shift) * profile.grid.dt
@@ -296,7 +296,7 @@ class BandLimitedDCPhysicalRFFT(DCPhysicalRFFT):
         return int(np.floor(self.f_cut / grid.df))
 
     def profile_to_form_factor(
-        self, profile: CurrentProfile
+        self, profile: Profile
     ) -> tuple[Grid, np.ndarray, np.ndarray]:
         grid, mag, phase = super().profile_to_form_factor(profile)
         k_cut = self._k_cut(grid)

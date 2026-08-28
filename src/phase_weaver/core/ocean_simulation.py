@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .measurement import CalibrationStatus, Measurement, MeasurementKind
 
 C_NM_THZ = 299792.458
 OCEAN_NUM_PIXELS = 512
@@ -50,28 +51,21 @@ class OceanSimulationConfig:
             raise ValueError("normalization_percentile must be in (0, 100]")
 
 
-@dataclass(frozen=True, slots=True)
-class OceanSimulationResult:
-    wavelength_nm: np.ndarray
-    freq_hz: np.ndarray
-    intensity_counts: np.ndarray
-    intensity_std_counts: np.ndarray
-    ffabs_relative: np.ndarray
-    ffabs_std: np.ndarray
-    ffabs_detection_limit: np.ndarray
-
-
 def simulate_ocean_measurement(
     formfactor_freq_hz: np.ndarray,
     formfactor_mag: np.ndarray,
     config: OceanSimulationConfig | None = None,
-) -> OceanSimulationResult:
+) -> Measurement:
     """Simulate an Ocean/NIR spectrum and recover a relative ``|F|`` shape.
 
     The model samples on 512 wavelength pixels, converts ``|F|^2`` to arbitrary
     detector counts, adds photon and electronic noise in the count domain,
     averages shots, subtracts the known model dark level, and applies the same
     square-root/95th-percentile normalization used for loaded Ocean data.
+
+    Returns a :class:`Measurement` in the relative-shape ``|F|`` representation
+    (``calibration=RELATIVE``); the count-domain wavelength/intensity internals
+    are not part of the reconstruction-facing contract.
     """
 
     config = config or OceanSimulationConfig()
@@ -145,12 +139,13 @@ def simulate_ocean_measurement(
 
     # Frequency is more convenient in increasing order throughout PhaseWeaver.
     reverse = slice(None, None, -1)
-    return OceanSimulationResult(
-        wavelength_nm=wavelength_nm[reverse].copy(),
-        freq_hz=freq_hz[reverse].copy(),
-        intensity_counts=intensity_counts[reverse].copy(),
-        intensity_std_counts=intensity_std[reverse].copy(),
-        ffabs_relative=ffabs_relative[reverse].copy(),
-        ffabs_std=ffabs_std[reverse].copy(),
-        ffabs_detection_limit=ffabs_detection_limit[reverse].copy(),
+    return Measurement(
+        freq=freq_hz[reverse].copy(),
+        mag=ffabs_relative[reverse].copy(),
+        mag_std=ffabs_std[reverse].copy(),
+        detection_limit=ffabs_detection_limit[reverse].copy(),
+        kind=MeasurementKind.OCEAN_NIR,
+        calibration=CalibrationStatus.RELATIVE,
+        label="Ocean NIR detector simulation",
+        source=f"ocean_simulation(seed={config.seed}, n_shots={config.n_shots})",
     )

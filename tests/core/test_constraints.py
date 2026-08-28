@@ -22,7 +22,7 @@ from phase_weaver.core.constraints import (
     ReplacePhaseEndLinearSmooth,
     TimeConstraint,
 )
-from phase_weaver.core.measurement import MeasuredFormFactor
+from phase_weaver.core.measurement import Measurement
 from phase_weaver.core.utils import smooth_overlap
 
 
@@ -142,7 +142,7 @@ def test_blend_relative_measured_shape_scales_to_band_average():
         mag=original_mag.copy(),
         phase=np.zeros_like(original_mag),
     )
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=np.array([10.0, 11.0, 12.0, 13.0, 14.0]),
         mag=np.array([100.0, 80.0, 60.0, 40.0, 20.0]),
     )
@@ -166,7 +166,7 @@ def test_blend_measured_magnitude_can_taper_one_band_edge():
         mag=np.zeros_like(grid.f_pos),
         phase=np.zeros_like(grid.f_pos),
     )
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=grid.f_pos[:5],
         mag=np.ones(5),
     )
@@ -190,11 +190,11 @@ def test_spline_interpolate_measurement_gaps_bridges_measured_band_endpoints():
         mag=np.zeros_like(grid.f_pos),
         phase=np.zeros_like(grid.f_pos),
     )
-    crisp = MeasuredFormFactor(
+    crisp = Measurement(
         freq=grid.f_pos[:6],
         mag=np.ones(6),
     )
-    infrared = MeasuredFormFactor(
+    infrared = Measurement(
         freq=grid.f_pos[10:],
         mag=np.full(len(grid.f_pos[10:]), 0.2),
     )
@@ -221,7 +221,7 @@ def test_blend_relative_measured_shape_can_use_fixed_anchor_formfactor():
         mag=anchor_mag.copy(),
         phase=np.zeros_like(anchor_mag),
     )
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=np.array([10.0, 11.0, 12.0, 13.0, 14.0]),
         mag=np.array([100.0, 80.0, 60.0, 40.0, 20.0]),
     )
@@ -244,7 +244,7 @@ def test_blend_relative_measured_shape_can_use_fixed_scale():
         mag=np.full(len(grid.f_pos), 0.01),
         phase=np.zeros(len(grid.f_pos)),
     )
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=np.array([10.0, 11.0, 12.0]),
         mag=np.array([0.2, 0.4, 0.6]),
     )
@@ -402,7 +402,7 @@ def test_blend_measured_magnitude_matches_helper(grid):
     ff = FormFactor(grid=grid, mag=mag.copy(), phase=phase.copy())
 
     measured = (
-        MeasuredFormFactor(
+        Measurement(
             freq=np.array([0.0, 50.0, 100.0]),
             mag=np.array([1.0, 2.0, 3.0]),
         ),
@@ -435,7 +435,7 @@ def test_blend_measured_magnitude_without_scaling_uses_raw_measurement(grid):
     ff = FormFactor(grid=grid, mag=mag.copy(), phase=phase.copy())
 
     measured = (
-        MeasuredFormFactor(
+        Measurement(
             freq=np.array([0.0, 50.0, 100.0]),
             mag=np.array([1.0, 2.0, 3.0]),
         ),
@@ -461,7 +461,7 @@ def test_blend_measured_magnitude_without_scaling_uses_raw_measurement(grid):
 
 
 def test_blend_measured_magnitude_validates_inputs():
-    measured = (MeasuredFormFactor(freq=np.array([0.0, 1.0]), mag=np.ones(2)),)
+    measured = (Measurement(freq=np.array([0.0, 1.0]), mag=np.ones(2)),)
 
     with pytest.raises(ValueError, match="power must be positive"):
         BlendMeasuredMagnitude(measured=measured, power=0.0)

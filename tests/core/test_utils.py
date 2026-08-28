@@ -441,6 +441,21 @@ def test_smooth_overlap_raises_for_unsorted_x_target():
         )
 
 
+def test_gaussian_extend_stays_finite_for_frequency_values_in_hz():
+    x_target = np.linspace(0.0, 5.0e15, 257)
+    x_source = np.linspace(1.0e12, 5.0e12, 20)
+    y_source = np.linspace(0.01, 1.0, 20)
+
+    y_target = gaussian_extend(
+        x_target,
+        x_source,
+        y_source,
+        min_positive=np.finfo(float).eps,
+    )
+
+    assert np.isfinite(y_target).all()
+
+
 def test_smooth_overlap_raises_for_negative_transition_width():
     with pytest.raises(ValueError, match="transition_width must be non-negative"):
         smooth_overlap(

@@ -5,7 +5,7 @@ from phase_weaver.app.config import PLOT_LINE_MODE
 from phase_weaver.app.logic import LoadedMeasurement, ReferenceCurrentProfile
 from phase_weaver.app.state import ProfileModel, ProfileModelState
 from phase_weaver.app.ui.plot_panel import PlotPanel
-from phase_weaver.core.measurement import MeasuredFormFactor
+from phase_weaver.core.measurement import Measurement
 from phase_weaver.qt_theme import APP_THEME
 
 
@@ -69,7 +69,7 @@ def test_plot_panel_render_methods_run():
     profile, formfactor = _plot_inputs()
     measurement = LoadedMeasurement(
         label="measurement",
-        measured=MeasuredFormFactor(
+        measured=Measurement(
             freq=np.array([10e12, 20e12]),
             mag=np.array([0.9, 0.7]),
         ),
@@ -148,7 +148,7 @@ def test_plot_panel_line_visibility_follows_controls():
         (
             LoadedMeasurement(
                 label="measurement",
-                measured=MeasuredFormFactor(freq=np.array([10e12]), mag=np.array([0.9])),
+                measured=Measurement(freq=np.array([10e12]), mag=np.array([0.9])),
                 reference_current=ReferenceCurrentProfile(
                     label="CRISP SA1",
                     time_s=np.array([0.0]),

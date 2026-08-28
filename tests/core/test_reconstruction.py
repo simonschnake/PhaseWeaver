@@ -20,7 +20,9 @@ from phase_weaver.app.state import (
     ReconstructionState,
 )
 from phase_weaver.core.base import DCPhysicalRFFT, FormFactor, Grid, Profile
-from phase_weaver.core.measurement import MeasuredFormFactor
+from phase_weaver.core.measurement import Measurement
+from phase_weaver.core.pipeline import CrispThenIrSeed, ReconstructionPipeline
+from phase_weaver.core.policy import RECONSTRUCTION_ALGORITHM
 from phase_weaver.core.reconstruction import (
     CombinedStopCriterion,
     GerchbergSaxton,
@@ -37,6 +39,40 @@ from phase_weaver.core.reconstruction import (
 )
 from phase_weaver.core.constraints import BlendRelativeMeasuredShape
 from phase_weaver.core.utils import trapz_uniform
+
+
+def test_reconstruction_pipeline_dispatches_by_algorithm_policy():
+    calls: list[str] = []
+    pipeline = ReconstructionPipeline(
+        {
+            RECONSTRUCTION_ALGORITHM.GERCHBERG_SAXTON: lambda request: (
+                calls.append("gs") or request
+            ),
+            RECONSTRUCTION_ALGORITHM.CRISP: lambda request: (
+                calls.append("crisp") or request
+            ),
+        }
+    )
+
+    request = object()
+    assert pipeline.run(RECONSTRUCTION_ALGORITHM.CRISP, request) is request
+    assert calls == ["crisp"]
+
+
+def test_reconstruction_pipeline_rejects_unregistered_algorithm():
+    pipeline = ReconstructionPipeline({})
+
+    with pytest.raises(ValueError, match="No reconstruction handler registered"):
+        pipeline.run(RECONSTRUCTION_ALGORITHM.CRISP, object())
+
+
+def test_crisp_then_ir_seed_composes_seed_and_extension():
+    step = CrispThenIrSeed(
+        crisp=lambda request: request + "-crisp",
+        extension=lambda request, seed: f"{request}+{seed}-ir",
+    )
+
+    assert step.run("input") == "input+input-crisp-ir"
 
 
 def first_moment(t: np.ndarray, p: np.ndarray, dt: float) -> float:
@@ -69,7 +105,7 @@ def test_relative_shape_constraint_uses_uncertainty_and_detection_limit(grid: Gr
         mag=np.full_like(grid.f_pos, 0.5),
         phase=np.zeros_like(grid.f_pos),
     )
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=freq,
         mag=np.array([1.0, 1.0, 1.0]),
         mag_std=np.array([0.001, 100.0, 0.001]),
@@ -177,7 +213,7 @@ def test_phase_stopped_changing_patience(grid: Grid):
 
 
 def test_measurements_stopped_changing_patience(grid: Grid):
-    measured = MeasuredFormFactor(freq=grid.f_pos, mag=np.ones_like(grid.f_pos))
+    measured = Measurement(freq=grid.f_pos, mag=np.ones_like(grid.f_pos))
     ff = FormFactor(grid=grid, mag=np.ones_like(grid.f_pos), phase=np.zeros_like(grid.f_pos))
 
     stop = MeasurementsStoppedChanging(measured_ff=(measured,), tol=1e-12, patience=2)
@@ -225,7 +261,7 @@ def test_combined_stop_criterion_excludes_direct_only_criteria_from_all_stop():
 
 
 def test_gerchberg_saxton_initializes_with_zero_magnitudes(grid: Grid):
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=grid.f_pos,
         mag=np.linspace(1.0, 0.0, len(grid.f_pos)),
     )
@@ -242,7 +278,7 @@ def test_gerchberg_saxton_initializes_with_zero_magnitudes(grid: Grid):
 
 
 def test_gerchberg_saxton_uses_selected_reconstruction_options(grid: Grid):
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=grid.f_pos,
         mag=np.linspace(1.0, 0.1, len(grid.f_pos)),
     )
@@ -273,11 +309,11 @@ def test_gerchberg_saxton_uses_selected_reconstruction_options(grid: Grid):
 
 
 def test_gerchberg_saxton_adds_relative_shape_constraint(grid: Grid):
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=grid.f_pos[:20],
         mag=np.linspace(1.0, 0.7, 20),
     )
-    relative = MeasuredFormFactor(
+    relative = Measurement(
         freq=grid.f_pos[30:50],
         mag=np.linspace(0.2, 1.0, 20),
     )
@@ -305,11 +341,11 @@ def test_gerchberg_saxton_adds_relative_shape_constraint(grid: Grid):
 def test_gerchberg_saxton_adds_spline_bridge_for_separated_crisp_and_ir_bands(
     grid: Grid,
 ):
-    crisp = MeasuredFormFactor(
+    crisp = Measurement(
         freq=grid.f_pos[10:20],
         mag=np.linspace(1.0, 0.7, 10),
     )
-    infrared = MeasuredFormFactor(
+    infrared = Measurement(
         freq=grid.f_pos[40:50],
         mag=np.linspace(0.5, 0.2, 10),
     )
@@ -334,11 +370,11 @@ def test_gerchberg_saxton_adds_spline_bridge_for_separated_crisp_and_ir_bands(
 
 
 def test_relative_measurements_extend_high_frequency_decay_bounds(grid: Grid):
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=grid.f_pos[1:10],
         mag=np.linspace(1.0, 0.7, 9),
     )
-    relative = MeasuredFormFactor(
+    relative = Measurement(
         freq=grid.f_pos[20:30],
         mag=np.linspace(0.2, 1.0, 10),
     )
@@ -364,11 +400,11 @@ def test_relative_measurements_extend_high_frequency_decay_bounds(grid: Grid):
 
 
 def test_relative_measurements_do_not_enter_calibrated_error(grid: Grid):
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=grid.f_pos,
         mag=np.linspace(1.0, 0.5, len(grid.f_pos)),
     )
-    relative = MeasuredFormFactor(
+    relative = Measurement(
         freq=grid.f_pos[10:30],
         mag=np.linspace(100.0, 200.0, 20),
     )
@@ -388,7 +424,7 @@ def test_relative_measurements_do_not_enter_calibrated_error(grid: Grid):
 
 
 def test_empty_stop_selection_falls_back_to_max_iter(grid: Grid):
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=grid.f_pos,
         mag=np.linspace(1.0, 0.1, len(grid.f_pos)),
     )
@@ -407,7 +443,7 @@ def test_empty_stop_selection_falls_back_to_max_iter(grid: Grid):
 
 
 def test_high_frequency_decay_bounds_start_after_last_measurement(grid: Grid):
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=grid.f_pos[:11],
         mag=np.ones(11),
     )
@@ -418,7 +454,7 @@ def test_high_frequency_decay_bounds_start_after_last_measurement(grid: Grid):
 
 
 def test_gerchberg_saxton_last_phase_initialization_uses_previous_phase(grid: Grid):
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=grid.f_pos,
         mag=np.linspace(1.0, 0.1, len(grid.f_pos)),
     )
@@ -435,7 +471,7 @@ def test_gerchberg_saxton_last_phase_initialization_uses_previous_phase(grid: Gr
 
 
 def test_gerchberg_saxton_can_initialize_magnitude_from_input_formfactor(grid: Grid):
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=grid.f_pos[1:10],
         mag=np.linspace(1.0, 0.2, 9),
     )
@@ -459,7 +495,7 @@ def test_gerchberg_saxton_can_initialize_magnitude_from_input_formfactor(grid: G
 def test_gerchberg_saxton_last_phase_initialization_falls_back_without_phase(
     grid: Grid, capsys: pytest.CaptureFixture[str]
 ):
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=grid.f_pos,
         mag=np.linspace(1.0, 0.1, len(grid.f_pos)),
     )
@@ -475,7 +511,7 @@ def test_gerchberg_saxton_last_phase_initialization_falls_back_without_phase(
 
 
 def test_gerchberg_saxton_last_phase_initialization_rejects_wrong_shape(grid: Grid):
-    measured = MeasuredFormFactor(
+    measured = Measurement(
         freq=grid.f_pos,
         mag=np.linspace(1.0, 0.1, len(grid.f_pos)),
     )
@@ -492,7 +528,7 @@ def test_gerchberg_saxton_last_phase_initialization_rejects_wrong_shape(grid: Gr
 def test_gerchberg_saxton_run_can_be_forced_to_stop_quickly(
     grid: Grid, measured_mag: np.ndarray
 ):
-    measured = MeasuredFormFactor(freq=grid.f_pos, mag=measured_mag)
+    measured = Measurement(freq=grid.f_pos, mag=measured_mag)
     alg = GerchbergSaxton(
         grid=grid,
         measurements=(measured,),
@@ -518,7 +554,7 @@ def test_gerchberg_saxton_run_can_be_forced_to_stop_quickly(
 def test_gerchberg_saxton_records_convergence_history(
     grid: Grid, measured_mag: np.ndarray
 ):
-    measured = MeasuredFormFactor(freq=grid.f_pos, mag=measured_mag)
+    measured = Measurement(freq=grid.f_pos, mag=measured_mag)
     alg = GerchbergSaxton(
         grid=grid,
         measurements=(measured,),

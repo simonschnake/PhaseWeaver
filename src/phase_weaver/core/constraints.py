@@ -6,10 +6,10 @@ import numpy as np
 from scipy.interpolate import CubicHermiteSpline
 
 from .utils import smooth_overlap, trapz_uniform
-from .measurement import MeasuredFormFactor
+from .measurement import Measurement
 
 if TYPE_CHECKING:
-    from .base import Profile, CurrentProfile, FormFactor, Grid
+    from .base import FormFactor, Grid, Profile
 
 
 class TimeConstraint(ABC):
@@ -53,12 +53,12 @@ class CombinedFrequencyConstraint(FrequencyConstraint):
 
 
 class NonNegativity(TimeConstraint):
-    def apply(self, prof: "CurrentProfile") -> None:
+    def apply(self, prof: "Profile") -> None:
         prof.values = np.maximum(prof.values, 0.0)
 
 
 class NormalizeArea(TimeConstraint):
-    def apply(self, prof: "CurrentProfile") -> None:
+    def apply(self, prof: "Profile") -> None:
         area = trapz_uniform(prof.grid.dt, prof.values)
         if area == 0:
             print("Warning: area is zero, cannot normalize.")
@@ -67,7 +67,7 @@ class NormalizeArea(TimeConstraint):
 
 
 class CenterFirstMoment(TimeConstraint):
-    def apply(self, prof: "CurrentProfile") -> None:
+    def apply(self, prof: "Profile") -> None:
         g = prof.grid
         mean_t = trapz_uniform(g.dt, prof.values * g.t)
         shift = int(np.round(mean_t / g.dt))
@@ -276,7 +276,7 @@ class BlendMeasuredMagnitude(FrequencyConstraint):
 
     def __init__(
         self,
-        measured: tuple[MeasuredFormFactor, ...],
+        measured: tuple[Measurement, ...],
         power: float = 2.0,
         transition_width: float | None = None,
         transition_width_left: tuple[float, ...] | None = None,
@@ -362,7 +362,7 @@ class BlendRelativeMeasuredShape(BlendMeasuredMagnitude):
 
     def __init__(
         self,
-        measured: tuple[MeasuredFormFactor, ...],
+        measured: tuple[Measurement, ...],
         power: float = 2.0,
         transition_width: float | None = None,
         transition_width_left: tuple[float, ...] | None = None,
@@ -477,7 +477,7 @@ class SplineInterpolateMeasurementGaps(FrequencyConstraint):
 
     def __init__(
         self,
-        measured: tuple[MeasuredFormFactor, ...],
+        measured: tuple[Measurement, ...],
         slope_fit_points: int = 5,
     ) -> None:
         super().__init__()
@@ -538,7 +538,7 @@ class CutAfterNthZeroFromPeak(TimeConstraint):
         self.threshold = threshold
         self.keep_crossing = keep_crossing
 
-    def apply(self, prof: "CurrentProfile") -> None:
+    def apply(self, prof: "Profile") -> None:
         x = np.asarray(prof.values, dtype=float)
 
         if x.ndim != 1:

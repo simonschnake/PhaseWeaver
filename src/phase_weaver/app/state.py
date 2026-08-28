@@ -2,12 +2,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from phase_weaver.core import CurrentProfile, Grid
+from phase_weaver.model import profile_model as _profile_model
+from phase_weaver.model.profile_model import ScenarioState
 from phase_weaver.model.profiles import AsymSuperGaussParams, asymmetric_super_gaussian
 
 from .config import (
-    CHARGE_C,
     CRISP_SIMULATION_MODE,
-    DT,
     IR_SIMULATION_MODE,
     PHASE_INIT_MODE,
     RECONSTRUCTION_ALGORITHM,
@@ -19,106 +19,44 @@ from .config import (
     RECON_TIME_CONSTRAINT,
     RECON_TIME_CONSTRAINT_DEFAULT,
     PHASE_INIT_DEFAULT,
-    T_MAX,
 )
+
+DT = _profile_model.DT
+T_MAX = _profile_model.T_MAX
+CHARGE_C = _profile_model.CHARGE_C
 
 
 def _default_background() -> AsymSuperGaussParams:
-    return AsymSuperGaussParams(
-        center=0.0,  # fixed at 0
-        width=2.191914604893585e-14,  # width_scale
-        skew=0.0,
-        order=1.0,
-        amplitude=5819.0,
-    )
+    return _profile_model._default_background()
 
 
 def _default_peak() -> AsymSuperGaussParams:
-    # label in GUI will be "Spike"
-    return AsymSuperGaussParams(
-        center=-1e-14,
-        width=7.21e-16,
-        skew=0.0,
-        order=0.5,
-        amplitude=13000.0,
-    )
+    return _profile_model._default_peak()
 
 
 def _default_peak2() -> AsymSuperGaussParams:
-    # label in GUI will be "Spike 2"
-    return AsymSuperGaussParams(
-        center=1e-14,
-        width=7.21e-16,
-        skew=0.0,
-        order=0.5,
-        amplitude=13000.0,
-    )
+    return _profile_model._default_peak2()
 
 
-@dataclass(slots=True)
-class ProfileModelState:
-    dt: float = DT
-    t_max: float = T_MAX
-    charge: float = CHARGE_C
+class ProfileModel(_profile_model.ProfileModel):
+    """Compatibility facade for callers that still import from ``app.state``."""
 
-    background: AsymSuperGaussParams = field(default_factory=_default_background)
-    peak: AsymSuperGaussParams = field(default_factory=_default_peak)
-
-    peak2_enabled: bool = False
-    peak2: AsymSuperGaussParams = field(default_factory=_default_peak2)
-
-
-class ProfileModel:
     def __init__(self, state: ProfileModelState | None = None):
-        self.state = state or ProfileModelState()
-        self.grid = Grid.from_dt_tmax(
-            dt=self.state.dt,
-            t_max=self.state.t_max,
-            snap_pow2=True,
-            min_N=64,
-        )
+        self._sync_model_symbols()
+        super().__init__(state)
 
     def compute_profile(self) -> CurrentProfile:
-        t = self.grid.t
+        self._sync_model_symbols()
+        return super().compute_profile()
 
-        bg = self.state.background
-        pk = self.state.peak
-        pk2 = self.state.peak2
+    @staticmethod
+    def _sync_model_symbols() -> None:
+        _profile_model.Grid = Grid
+        _profile_model.CurrentProfile = CurrentProfile
+        _profile_model.asymmetric_super_gaussian = asymmetric_super_gaussian
 
-        density = asymmetric_super_gaussian(
-            t,
-            center=0.0,  # background is always centered
-            width=bg.width,
-            skew=bg.skew,
-            order=bg.order,
-            amplitude=bg.amplitude,
-        )
 
-        density += asymmetric_super_gaussian(
-            t,
-            center=pk.center,
-            width=pk.width,
-            skew=pk.skew,
-            order=pk.order,
-            amplitude=pk.amplitude,
-        )
-
-        if self.state.peak2_enabled:
-            density += asymmetric_super_gaussian(
-                t,
-                center=pk2.center,
-                width=pk2.width,
-                skew=pk2.skew,
-                order=pk2.order,
-                amplitude=pk2.amplitude,
-            )
-
-        return CurrentProfile(
-            grid=self.grid,
-            values=density,
-            charge=self.state.charge,
-        )
-
+ProfileModelState = ScenarioState
 
 @dataclass(slots=True)
 class ReconstructionState:
@@ -154,6 +92,6 @@ class MeasurementState:
 
 @dataclass
 class ControlsState:
-    scenario: ProfileModelState
+    scenario: ScenarioState
     measurement: MeasurementState
     reconstruction: ReconstructionState

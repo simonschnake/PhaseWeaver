@@ -29,6 +29,27 @@ REFERENCE_CURRENT_COLOR_INDEX = 6
 pg.setConfigOptions(antialias=True)
 
 
+def _require_plot_item(widget: pg.PlotWidget) -> pg.PlotItem:
+    plot_item = widget.getPlotItem()
+    if plot_item is None:
+        raise RuntimeError("plot widget has no plot item")
+    return plot_item
+
+
+def _require_axis(plot_item: pg.PlotItem, name: str) -> pg.AxisItem:
+    axis = plot_item.getAxis(name)
+    if axis is None:
+        raise RuntimeError(f"plot item has no {name!r} axis")
+    return axis
+
+
+def _require_view_box(plot_item: pg.PlotItem) -> pg.ViewBox:
+    view_box = plot_item.vb
+    if view_box is None:
+        raise RuntimeError("plot item has no view box")
+    return view_box
+
+
 class LegendStrip(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -47,6 +68,8 @@ class LegendStrip(QWidget):
         self.labels = [label for label, *_ in items]
         while self._layout.count():
             item = self._layout.takeAt(0)
+            if item is None:
+                continue
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
@@ -151,7 +174,7 @@ class PlotCanvas(QWidget):
         self.time_plot.setLabel("left", "Current", units="A")
         self.time_plot.showGrid(x=False, y=False)
 
-        plot_item = self.spectrum_plot.getPlotItem()
+        plot_item = _require_plot_item(self.spectrum_plot)
         plot_item.setLabel("bottom", "f", units="Hz")
         plot_item.setLabel("left", "|F(f)|")
         plot_item.setLabel("right", "phase", units="rad")
@@ -161,16 +184,21 @@ class PlotCanvas(QWidget):
         plot_item.showGrid(x=False, y=False)
         plot_item.setLogMode(y=True)
 
-        plot_item.scene().addItem(self.phase_view)
-        plot_item.getAxis("right").linkToView(self.phase_view)
-        self.phase_view.setXLink(plot_item.vb)
-        plot_item.vb.sigResized.connect(self._sync_phase_view)
+        scene = plot_item.scene()
+        if scene is None:
+            raise RuntimeError("spectrum plot item has no scene")
+        scene.addItem(self.phase_view)
+        _require_axis(plot_item, "right").linkToView(self.phase_view)
+        view_box = _require_view_box(plot_item)
+        self.phase_view.setXLink(view_box)
+        view_box.sigResized.connect(self._sync_phase_view)
         self._sync_phase_view()
 
     def _sync_phase_view(self) -> None:
-        plot_item = self.spectrum_plot.getPlotItem()
-        self.phase_view.setGeometry(plot_item.vb.sceneBoundingRect())
-        self.phase_view.linkedViewChanged(plot_item.vb, self.phase_view.XAxis)
+        plot_item = _require_plot_item(self.spectrum_plot)
+        view_box = _require_view_box(plot_item)
+        self.phase_view.setGeometry(view_box.sceneBoundingRect())
+        self.phase_view.linkedViewChanged(view_box, self.phase_view.XAxis)
 
 
 class PlotPanel(QWidget):
@@ -194,7 +222,9 @@ class PlotPanel(QWidget):
         self._create_artists()
         self._style_axes()
         self.set_theme(theme)
-        self.canvas.spectrum_plot.setXRange(0.0, 333e12, padding=0.0)
+        self.canvas.spectrum_plot.getViewBox().setXRange(
+            0.0, 333e12, padding=0.0
+        )
 
     def render_input(self, prof_input: Profile, formfactor_input: FormFactor):
         axis_ranges = self._axis_ranges() if self._has_rendered_data() else None
@@ -400,7 +430,7 @@ class PlotPanel(QWidget):
             raise ValueError(
                 "Time model is not initialized. Call render_input() first."
             )
-        self.canvas.time_plot.setXRange(
+        self.canvas.time_plot.getViewBox().setXRange(
             model.t_min_plot_s, model.t_max_plot_s, padding=0.0
         )
         self.canvas.time_plot.enableAutoRange(axis="y")
@@ -413,7 +443,7 @@ class PlotPanel(QWidget):
             )
 
         x0, x1 = self._spectrum_x_range(model)
-        self.canvas.spectrum_plot.setXRange(x0, x1, padding=0.0)
+        self.canvas.spectrum_plot.getViewBox().setXRange(x0, x1, padding=0.0)
         self.canvas.spectrum_plot.enableAutoRange(axis="y")
         self.canvas.phase_view.enableAutoRange(axis="y")
         self.canvas._sync_phase_view()
@@ -513,37 +543,36 @@ class PlotPanel(QWidget):
         for widget in (self.canvas.time_plot, self.canvas.spectrum_plot):
             widget.setBackground(theme.plot_background)
             widget.setStyleSheet(f"background-color: {theme.plot_background};")
-            plot_item = widget.getPlotItem()
+            plot_item = _require_plot_item(widget)
             plot_item.showGrid(x=False, y=False)
             for axis_name in ("left", "right", "top", "bottom"):
-                axis = plot_item.getAxis(axis_name)
+                axis = _require_axis(plot_item, axis_name)
                 axis.setPen(pg.mkPen(theme.axis))
                 axis.setTextPen(pg.mkPen(theme.text))
                 axis.setStyle(tickTextOffset=6)
 
-        self.canvas.spectrum_plot.getPlotItem().getAxis("left").setTextPen(
-            pg.mkPen(colors[0])
-        )
-        self.canvas.spectrum_plot.getPlotItem().getAxis("right").setTextPen(
-            pg.mkPen(colors[1])
-        )
+        spectrum_plot_item = _require_plot_item(self.canvas.spectrum_plot)
+        _require_axis(spectrum_plot_item, "left").setTextPen(pg.mkPen(colors[0]))
+        _require_axis(spectrum_plot_item, "right").setTextPen(pg.mkPen(colors[1]))
 
         self.line_current.setPen(pg.mkPen(colors[0], width=LINE_WIDTH))
-        self.line_recon.setPen(pg.mkPen(colors[1], width=LINE_WIDTH, style=Qt.DashLine))
+        self.line_recon.setPen(
+            pg.mkPen(colors[1], width=LINE_WIDTH, style=Qt.PenStyle.DashLine)
+        )
         self.line_reference_current.setPen(
             pg.mkPen(
                 colors[REFERENCE_CURRENT_COLOR_INDEX],
                 width=LINE_WIDTH,
-                style=Qt.DotLine,
+                style=Qt.PenStyle.DotLine,
             )
         )
         self.line_mag.setPen(pg.mkPen(colors[0], width=LINE_WIDTH))
         self.line_mag_recon.setPen(
-            pg.mkPen(colors[1], width=LINE_WIDTH, style=Qt.DashLine)
+            pg.mkPen(colors[1], width=LINE_WIDTH, style=Qt.PenStyle.DashLine)
         )
         self.line_phase_in.setPen(pg.mkPen(colors[2], width=LINE_WIDTH))
         self.line_phase_recon.setPen(
-            pg.mkPen(colors[3], width=LINE_WIDTH, style=Qt.DashLine)
+            pg.mkPen(colors[3], width=LINE_WIDTH, style=Qt.PenStyle.DashLine)
         )
         self.line_fwhm_input.setPen(pg.mkPen(colors[0], width=FWHM_WIDTH))
         self.line_fwhm_recon.setPen(pg.mkPen(colors[1], width=FWHM_WIDTH))

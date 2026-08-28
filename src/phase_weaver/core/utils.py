@@ -13,7 +13,7 @@ def safe_real(x: np.ndarray) -> np.ndarray:
     """Return real part if complex (numerical leakage), else return float array."""
     x = np.asarray(x)
     if np.iscomplexobj(x):
-        return np.asarray(x.real, dtype=float)
+        return np.asarray(np.real(x), dtype=float)
     return np.asarray(x, dtype=float)
 
 
@@ -571,11 +571,19 @@ def gaussian_extend(
     # This guarantees derivative zero at x0.
     # ------------------------------------------------------------------
     x0 = lower_derivative_zero_at
+    # Frequency axes are commonly expressed in Hz (around 1e12--1e15).
+    # Fit in a dimensionless coordinate so the polynomial regression is well
+    # conditioned instead of losing the slope to the large absolute scale.
+    fit_scale = max(
+        float(np.max(np.abs(x_source))),
+        abs(float(x0)),
+        1.0,
+    )
 
     x_lower_tail = x_source[:n_tail]
     log_y_lower_tail = log_y_fit[:n_tail]
 
-    u_lower = (x_lower_tail - x0) ** 2
+    u_lower = ((x_lower_tail - x0) / fit_scale) ** 2
 
     # Linear least squares:
     # log(y) = a + b * u
@@ -593,9 +601,15 @@ def gaussian_extend(
     x_upper_tail = x_source[-n_tail:]
     log_y_upper_tail = log_y_fit[-n_tail:]
 
-    upper_coeff = np.polyfit(x_upper_tail, log_y_upper_tail, deg=1)
+    upper_coeff = np.polyfit(x_upper_tail / fit_scale, log_y_upper_tail, deg=1)
     b_upper = upper_coeff[0]
     a_upper = upper_coeff[1]
+    if b_upper > 0.0:
+        # A rising fitted tail is not a useful initial form-factor estimate:
+        # extrapolating it over a large FFT grid can overflow and poison the
+        # subsequent GS constraints. Hold such a tail at its measured edge.
+        b_upper = 0.0
+        a_upper = log_y_fit[-1]
 
     y_target = np.empty_like(x_target, dtype=float)
 
@@ -611,12 +625,15 @@ def gaussian_extend(
     )
 
     # Below range: constrained log-space extension
-    log_y_lower = a_lower + b_lower * (x_target[mask_lower] - x0) ** 2
-    y_target[mask_lower] = np.exp(log_y_lower)
+    log_y_lower = a_lower + b_lower * (
+        (x_target[mask_lower] - x0) / fit_scale
+    ) ** 2
+    log_max = np.log(np.finfo(float).max)
+    y_target[mask_lower] = np.exp(np.minimum(log_y_lower, log_max))
 
     # Above range: log-linear extension
-    log_y_upper = a_upper + b_upper * x_target[mask_upper]
-    y_target[mask_upper] = np.exp(log_y_upper)
+    log_y_upper = a_upper + b_upper * (x_target[mask_upper] / fit_scale)
+    y_target[mask_upper] = np.exp(np.minimum(log_y_upper, log_max))
 
     return y_target
 

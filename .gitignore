@@ -46,6 +46,9 @@ junit*.xml
 .idea/
 *.iml
 
+# --- Local agent planning ---
+.hermes/
+
 # --- OS junk ---
 .DS_Store
 .DS_Store?
@@ -72,10 +75,8 @@ exports/
 out/
 output/
 
-# --- uv tool / lock files ---
-# Keep uv.lock if you want reproducible environments for dev.
-# If you prefer, uncomment to ignore it.
-uv.lock
+# --- uv ---
+# uv.lock is committed for reproducible development and CI environments.
 
 # --- PyInstaller ---
 *.spec

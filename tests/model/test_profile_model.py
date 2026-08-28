@@ -2,6 +2,12 @@ import numpy as np
 import pytest
 
 from phase_weaver.app import state as mod
+from phase_weaver.model.profile_model import ScenarioState
+
+
+def test_scenario_state_is_the_canonical_profile_scenario_type():
+    assert mod.ProfileModelState is ScenarioState
+    assert mod.ProfileModelState() == ScenarioState()
 
 def test_default_background_values():
     p = mod._default_background()

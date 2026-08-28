@@ -27,12 +27,13 @@ from phase_weaver.app.logic import (
     load_measurements_file,
     load_measurements_h5,
     load_measurements_npz,
+    load_crisp_measurements_file,
+    load_ir_measurements_file,
 )
 from phase_weaver.core.crisp_reconstruction import (
     CrispReconstruction,
-    CrispReconstructionInput,
 )
-from phase_weaver.core.measurement import MeasuredFormFactor
+from phase_weaver.core.measurement import Measurement, SquaredMagnitudeMeasurement
 from phase_weaver.app.plot_model import SpectrumPlotModel, TimePlotModel
 from phase_weaver.app.state import (
     ControlsState,
@@ -42,6 +43,10 @@ from phase_weaver.app.state import (
     ReconstructionState,
 )
 from phase_weaver.core.reconstruction import ReconstructionHistory
+from phase_weaver.core.pipeline import ReconstructionPipeline
+from phase_weaver.app.loading import MeasurementLoader
+from phase_weaver.app.export import NpzExporter
+from phase_weaver.app.simulation import SimulationService
 
 
 def test_load_measurements_npz_single_pair(tmp_path):
@@ -54,6 +59,100 @@ def test_load_measurements_npz_single_pair(tmp_path):
     assert measurements[0].label == "measurement 1"
     assert_allclose(measurements[0].measured.freq, [1.0, 3.0])
     assert_allclose(measurements[0].measured.mag, [10.0, 30.0])
+
+
+def test_measurement_loader_delegates_loading_and_ocean_replacement():
+    calls: list[tuple[str, int | None]] = []
+
+    def load(path, shot_index):
+        calls.append((str(path), shot_index))
+        return ("crisp", "ocean_nir")
+
+    loader = MeasurementLoader(load, lambda path: ("shot",))
+
+    assert loader.load("recording.h5", h5_shot_index=2) == ("crisp", "ocean_nir")
+    assert loader.list_shots("recording.h5") == ("shot",)
+    assert loader.replace_ocean(
+        ("old_crisp", "old_ocean_nir"),
+        ("new_ocean_nir",),
+        kind=lambda item: item.split("_", 1)[-1],
+    ) == ("old_crisp", "new_ocean_nir")
+    assert calls == [("recording.h5", 2)]
+
+
+def test_measurement_loader_exposes_type_specific_contracts():
+    loader = MeasurementLoader(
+        lambda path, shot_index: {
+            "crisp.npz": (LoadedMeasurement("CRISP", Measurement([1.0], [1.0]), kind="crisp"),),
+            "ir.npz": (LoadedMeasurement("IR", Measurement([1.0], [1.0]), kind="ocean_nir"),),
+        }[str(path)],
+        lambda path: (),
+    )
+
+    assert loader.load_crisp("crisp.npz")[0].kind == "crisp"
+    assert loader.load_ir("ir.npz")[0].kind == "ocean_nir"
+
+    with pytest.raises(ValueError, match="CRISP"):
+        loader.load_crisp("ir.npz")
+    with pytest.raises(ValueError, match="IR"):
+        loader.load_ir("crisp.npz")
+
+
+def test_npz_exporter_writes_plot_arrays_and_summary(tmp_path):
+    exporter = NpzExporter()
+    path = tmp_path / "export.npz"
+    summary = ReconstructionSummary(algorithm="CRISP", status="finished")
+
+    exporter.export_npz(path, None, None, summary=summary)
+
+    with np.load(path) as data:
+        assert data["reconstruction_algorithm"].item() == "CRISP"
+        assert data["reconstruction_status"].item() == "finished"
+        assert data["t"].size == 0
+
+
+def test_simulation_service_delegates_crisp_and_ocean_forward_models():
+    calls: list[str] = []
+    service = SimulationService(
+        crisp_simulator=lambda *args: calls.append("crisp") or "crisp-result",
+        ocean_simulator=lambda *args: calls.append("ocean") or "ocean-result",
+    )
+
+    assert service.simulate_crisp("profile", "state") == "crisp-result"
+    assert service.simulate_ocean("form-factor", "state") == "ocean-result"
+    assert calls == ["crisp", "ocean"]
+
+
+def test_app_logic_reconstruction_pipeline_dispatches_by_selected_algorithm():
+    logic = AppLogic()
+    calls: list[str] = []
+    logic._reconstruction_pipeline = ReconstructionPipeline(
+        {
+            RECONSTRUCTION_ALGORITHM.GERCHBERG_SAXTON: lambda request: (
+                calls.append("gs") or ("profile", "form_factor", "summary")
+            ),
+            RECONSTRUCTION_ALGORITHM.CRISP: lambda request: (
+                calls.append("crisp") or ("profile", "form_factor", "summary")
+            ),
+        }
+    )
+    state = ControlsState(
+        scenario=ProfileModelState(),
+        measurement=MeasurementState(),
+        reconstruction=ReconstructionState(
+            algorithm=RECONSTRUCTION_ALGORITHM.CRISP,
+        ),
+    )
+
+    result = logic.compute_reconstruction(
+        grid=ProfileModel(state.scenario).grid,
+        measurements=(),
+        controls_state=state,
+        ff_input=None,
+    )
+
+    assert result == ("profile", "form_factor", "summary")
+    assert calls == ["crisp"]
 
 
 def test_load_measurements_npz_multiple_pairs_with_labels(tmp_path):
@@ -145,6 +244,33 @@ def test_load_measurements_npz_cor2d_spec_hist_mean_as_ocean_relative_signal(tmp
     assert ocean.measured.mag[-1] == pytest.approx(np.sqrt(100.0) / 48.0)
 
 
+def test_load_measurements_npz_cor2d_clips_negative_background_corrected_mean(
+    tmp_path,
+):
+    path = tmp_path / "cor2d_noise.npz"
+    wavelength_nm = np.array([950.0, 1000.0, 1500.0, 2000.0, 2400.0])
+    spec_hist = np.array(
+        [
+            [100.0, 400.0, -10.0, 1600.0, 2500.0],
+            [100.0, 400.0, -4.0, 1600.0, 2500.0],
+        ]
+    )
+    np.savez(
+        path,
+        dumpversion=np.array(1),
+        phen_scale=wavelength_nm,
+        spec_hist=spec_hist,
+    )
+
+    measurements = load_measurements_npz(path)
+
+    assert len(measurements) == 1
+    ocean = measurements[0]
+    assert ocean.kind == "ocean_nir"
+    assert np.all(np.isfinite(ocean.measured.mag))
+    assert np.all(ocean.measured.mag >= 0.0)
+
+
 def test_load_measurements_npz_rejects_missing_pair(tmp_path):
     path = tmp_path / "bad_measurements.npz"
     np.savez(path, freq_hz_0=np.array([1.0, 2.0]))
@@ -197,7 +323,7 @@ def test_load_measurements_h5_builds_crisp_input_with_charge(tmp_path):
             data=np.array(
                 [
                     [[0.1, 0.01], [0.2, 0.04]],
-                    [[0.3, 0.09], [0.4, -0.16]],
+                    [[0.3, 0.09], [0.4, 0.16]],
                 ],
                 dtype=np.float32,
             ),
@@ -207,11 +333,11 @@ def test_load_measurements_h5_builds_crisp_input_with_charge(tmp_path):
 
     crisp_input = measurements[0].crisp_input
     assert crisp_input is not None
-    assert crisp_input.shot_index == 1
+    assert "shot=1" in crisp_input.source
     assert crisp_input.charge_c == pytest.approx(0.25e-9)
-    assert_allclose(crisp_input.freq_hz, [0.3e12, 0.4e12])
-    assert_allclose(crisp_input.ffsq, [0.09, -0.16])
-    assert_allclose(crisp_input.ffsq_std, [0.0, 0.0])
+    assert_allclose(crisp_input.freq, [0.3e12, 0.4e12])
+    assert_allclose(crisp_input.mag, [0.09, 0.16])
+    assert_allclose(crisp_input.mag_std, [0.0, 0.0])
     assert_allclose(crisp_input.detection_limit, [0.0, 0.0])
 
 
@@ -248,8 +374,8 @@ def test_load_measurements_h5_uses_reconstruction_input_columns(tmp_path):
     assert_allclose(measurements[0].measured.mag, [0.3, 0.4])
     crisp_input = measurements[0].crisp_input
     assert crisp_input is not None
-    assert_allclose(crisp_input.ffsq, [0.33, 0.44])
-    assert_allclose(crisp_input.ffsq_std, [0.03, 0.04])
+    assert_allclose(crisp_input.mag, [0.33, 0.44])
+    assert_allclose(crisp_input.mag_std, [0.03, 0.04])
     assert_allclose(crisp_input.detection_limit, [0.003, 0.004])
 
 
@@ -345,6 +471,86 @@ def test_load_measurements_h5_loads_ocean_nir_relative_measurement(tmp_path):
     assert ocean.measured.mag[0] == pytest.approx(1.0)
 
 
+def test_load_ir_measurements_file_loads_ocean_from_h5_shot(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "measurement.h5"
+    wavelengths_nm = np.array([950.0, 1000.0, 1500.0, 2000.0, 2400.0])
+    first_intensities = np.array([100.0, 400.0, 900.0, 1600.0, 2500.0])
+    second_intensities = first_intensities * 2.0
+    with h5py.File(path, "w") as data:
+        data.create_dataset(TIMESTAMP_KEY, data=np.array([100.0, 300.0]))
+        data.create_dataset(
+            CRISP_FORMFACTOR_XY_KEY,
+            data=np.array(
+                [
+                    [[0.1, 0.01], [0.2, 0.04]],
+                    [[0.3, 0.09], [0.4, 0.16]],
+                ],
+                dtype=np.float32,
+            ),
+        )
+        data.create_dataset(
+            OCEAN_SPECTRUM_KEY,
+            data=np.array(
+                [
+                    np.column_stack((wavelengths_nm, first_intensities)),
+                    np.column_stack((wavelengths_nm, second_intensities)),
+                ],
+                dtype=np.float32,
+            ),
+        )
+
+    loaded = load_ir_measurements_file(path, h5_shot_index=0)
+
+    assert len(loaded) == 1
+    assert loaded[0].kind == "ocean_nir"
+    assert loaded[0].label == "Ocean NIR relative |F|"
+    assert loaded[0].measured.mag[0] == pytest.approx(1.0)
+
+
+def test_app_logic_load_ir_from_h5_replaces_ocean_for_selected_shot(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "measurement.h5"
+    wavelengths_nm = np.array([1000.0, 1500.0, 2000.0])
+    with h5py.File(path, "w") as data:
+        data.create_dataset(TIMESTAMP_KEY, data=np.array([100.0, 300.0]))
+        data.create_dataset(
+            CRISP_FORMFACTOR_XY_KEY,
+            data=np.array(
+                [
+                    [[0.1, 0.01], [0.2, 0.04]],
+                    [[0.3, 0.09], [0.4, 0.16]],
+                ],
+                dtype=np.float32,
+            ),
+        )
+        data.create_dataset(
+            OCEAN_SPECTRUM_KEY,
+            data=np.array(
+                [
+                    np.column_stack((wavelengths_nm, [1.0, 4.0, 9.0])),
+                    np.column_stack((wavelengths_nm, [2.0, 8.0, 18.0])),
+                ],
+                dtype=np.float32,
+            ),
+        )
+
+    logic = AppLogic()
+    crisp = LoadedMeasurement(
+        "CRISP", Measurement(np.array([1e12]), np.array([0.5])), kind="crisp"
+    )
+    old_ir = LoadedMeasurement(
+        "old IR", Measurement(np.array([130e12]), np.array([0.5])), kind="ocean_nir"
+    )
+    logic.loaded_measurements = (crisp, old_ir)
+
+    loaded = logic.load_ir_measurements(path, h5_shot_index=0)
+
+    assert loaded[0] is crisp
+    assert loaded[1].kind == "ocean_nir"
+    assert loaded[1] is not old_ir
+
+
 def test_load_measurements_h5_skips_zero_ocean_signal(tmp_path):
     h5py = pytest.importorskip("h5py")
     path = tmp_path / "measurement.h5"
@@ -404,6 +610,27 @@ def test_load_measurements_h5_rejects_mismatched_reconstruction_input_shape(tmp_
         load_measurements_h5(path)
 
 
+def test_load_measurements_h5_rejects_invalid_crisp_reconstruction_values(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "bad_reconstruction_input.h5"
+    with h5py.File(path, "w") as data:
+        data.create_dataset(TIMESTAMP_KEY, data=np.array([100.0]))
+        data.create_dataset(
+            CRISP_FORMFACTOR_XY_KEY,
+            data=np.array([[[0.1, 0.01], [0.2, 0.04]]], dtype=np.float32),
+        )
+        data.create_dataset(
+            CRISP_INPUT_FFSQ_KEY,
+            data=np.array([[-0.1, 0.04]], dtype=np.float32),
+        )
+
+    measurements = load_crisp_measurements_file(path)
+
+    crisp_input = measurements[0].crisp_input
+    assert crisp_input is not None
+    assert crisp_input.mag[0] == pytest.approx(-0.1)
+
+
 def test_load_measurements_h5_rejects_mismatched_reference_current_shape(tmp_path):
     h5py = pytest.importorskip("h5py")
     path = tmp_path / "measurement.h5"
@@ -441,6 +668,96 @@ def test_load_measurements_h5_skips_negative_crisp_points(tmp_path):
 
     assert_allclose(measurements[0].measured.freq, [0.1e12, 0.3e12])
     assert_allclose(measurements[0].measured.mag, [0.1, 0.3])
+
+
+def test_load_measurements_h5_crisp_loader_ignores_optional_ocean_dataset(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "measurement.h5"
+    with h5py.File(path, "w") as data:
+        data.create_dataset(TIMESTAMP_KEY, data=np.array([100.0]))
+        data.create_dataset(
+            CRISP_FORMFACTOR_XY_KEY,
+            data=np.array([[[0.1, 0.01], [0.2, 0.04]]], dtype=np.float32),
+        )
+        data.create_dataset(OCEAN_SPECTRUM_KEY, data=np.zeros((2, 2, 2)))
+
+    measurements = load_crisp_measurements_file(path)
+
+    assert [item.kind for item in measurements] == ["crisp"]
+
+
+def test_app_logic_load_crisp_rejects_generic_npz_and_preserves_state(tmp_path):
+    path = tmp_path / "generic.npz"
+    np.savez(path, freq_hz=np.array([1.0]), mag=np.array([0.5]))
+    logic = AppLogic()
+    previous = LoadedMeasurement(
+        "old CRISP", Measurement([1.0], [0.5]), kind="crisp"
+    )
+    logic.loaded_measurements = (previous,)
+    logic.phase_last = np.array([0.1, 0.2])
+    logic.reconstruction_summary.status = "finished"
+    summary_before = logic.reconstruction_summary
+
+    with pytest.raises(ValueError, match="CRISP"):
+        logic.load_crisp_measurements(path)
+
+    assert logic.loaded_measurements == (previous,)
+    assert np.array_equal(logic.phase_last, [0.1, 0.2])
+    assert logic.reconstruction_summary is summary_before
+    assert logic.reconstruction_summary.status == "finished"
+
+
+def test_app_logic_load_ir_rejects_generic_npz_and_preserves_state(tmp_path):
+    path = tmp_path / "generic.npz"
+    np.savez(path, freq_hz=np.array([1.0]), mag=np.array([0.5]))
+    logic = AppLogic()
+    previous = LoadedMeasurement(
+        "old IR", Measurement([130e12], [0.5]), kind="ocean_nir"
+    )
+    logic.loaded_measurements = (previous,)
+    logic.phase_last = np.array([0.3, 0.4])
+    logic.reconstruction_summary.status = "finished"
+    summary_before = logic.reconstruction_summary
+
+    with pytest.raises(ValueError, match="IR"):
+        logic.load_ir_measurements(path)
+
+    assert logic.loaded_measurements == (previous,)
+    assert np.array_equal(logic.phase_last, [0.3, 0.4])
+    assert logic.reconstruction_summary is summary_before
+    assert logic.reconstruction_summary.status == "finished"
+
+
+def test_load_ir_measurements_file_rejects_negative_ocean_signal(tmp_path):
+    path = tmp_path / "bad_ir.npz"
+    np.savez(path, e_axis=np.array([1000.0, 1500.0]), average=np.array([1.0, -1.0]))
+
+    with pytest.raises(ValueError, match="non-negative"):
+        load_ir_measurements_file(path)
+
+
+def test_app_logic_load_ir_replaces_only_existing_ocean_measurement(tmp_path):
+    path = tmp_path / "ir.npz"
+    np.savez(
+        path,
+        e_axis=np.array([1000.0, 1500.0, 2000.0]),
+        average=np.array([100.0, 400.0, 900.0]),
+    )
+    logic = AppLogic()
+    crisp = LoadedMeasurement(
+        "CRISP", Measurement(np.array([1e12]), np.array([0.5])), kind="crisp"
+    )
+    old_ir = LoadedMeasurement(
+        "old IR", Measurement(np.array([130e12]), np.array([0.5])), kind="ocean_nir"
+    )
+    logic.loaded_measurements = (crisp, old_ir)
+
+    loaded = logic.load_ir_measurements(path)
+
+    assert loaded[0] is crisp
+    assert len(loaded) == 2
+    assert loaded[1].kind == "ocean_nir"
+    assert loaded[1] is not old_ir
 
 
 def test_list_h5_measurement_shots_returns_available_timestamps(tmp_path):
@@ -546,7 +863,7 @@ def test_app_logic_excludes_loaded_ocean_nir_from_active_reconstruction():
     logic.loaded_measurements = (
         LoadedMeasurement(
             label="Loaded CRISP",
-            measured=MeasuredFormFactor(
+            measured=Measurement(
                 freq=np.array([10e12, 20e12]),
                 mag=np.array([0.9, 0.7]),
             ),
@@ -556,7 +873,7 @@ def test_app_logic_excludes_loaded_ocean_nir_from_active_reconstruction():
         ),
         LoadedMeasurement(
             label="Ocean NIR relative |F|",
-            measured=MeasuredFormFactor(
+            measured=Measurement(
                 freq=np.array([130e12, 150e12]),
                 mag=np.array([1.0, 0.8]),
             ),
@@ -590,7 +907,7 @@ def test_app_logic_uses_ocean_nir_only_as_relative_constraint():
     logic.loaded_measurements = (
         LoadedMeasurement(
             label="Loaded CRISP",
-            measured=MeasuredFormFactor(
+            measured=Measurement(
                 freq=np.array([10e12, 20e12]),
                 mag=np.array([0.9, 0.7]),
             ),
@@ -600,7 +917,7 @@ def test_app_logic_uses_ocean_nir_only_as_relative_constraint():
         ),
         LoadedMeasurement(
             label="Ocean NIR relative |F|",
-            measured=MeasuredFormFactor(
+            measured=Measurement(
                 freq=np.array([130e12, 150e12]),
                 mag=np.array([1.0, 0.8]),
             ),
@@ -625,7 +942,7 @@ def test_app_logic_missing_ocean_nir_relative_constraint_fails_clearly():
     logic.loaded_measurements = (
         LoadedMeasurement(
             label="Loaded CRISP",
-            measured=MeasuredFormFactor(
+            measured=Measurement(
                 freq=np.array([10e12, 20e12]),
                 mag=np.array([0.9, 0.7]),
             ),
@@ -651,7 +968,7 @@ def test_app_logic_uses_ocean_detector_simulation_with_loaded_crisp_measurement(
     logic.loaded_measurements = (
         LoadedMeasurement(
             label="Loaded CRISP",
-            measured=MeasuredFormFactor(
+            measured=Measurement(
                 freq=np.array([10e12, 20e12]),
                 mag=np.array([0.9, 0.7]),
             ),
@@ -680,13 +997,15 @@ def test_app_logic_crisp_algorithm_can_extend_with_ocean_nir():
     freq_hz = np.linspace(0.5e12, 60.0e12, 160)
     crisp_input = LoadedMeasurement(
         label="Loaded CRISP",
-        measured=MeasuredFormFactor(
+        measured=Measurement(
             freq=freq_hz,
             mag=np.sqrt(np.exp(-0.5 * ((freq_hz / 1e12) / 18.0) ** 2)),
         ),
-        crisp_input=CrispReconstructionInput(
-            freq_hz=freq_hz,
-            ffsq=np.exp(-0.5 * ((freq_hz / 1e12) / 18.0) ** 2),
+        crisp_input=SquaredMagnitudeMeasurement(
+            freq=freq_hz,
+            mag=np.exp(-0.5 * ((freq_hz / 1e12) / 18.0) ** 2),
+            mag_std=np.zeros_like(freq_hz),
+            detection_limit=np.zeros_like(freq_hz),
             charge_c=250e-12,
         ),
         kind="crisp",
@@ -695,7 +1014,7 @@ def test_app_logic_crisp_algorithm_can_extend_with_ocean_nir():
     )
     ocean = LoadedMeasurement(
         label="Ocean NIR relative |F|",
-        measured=MeasuredFormFactor(
+        measured=Measurement(
             freq=np.linspace(120e12, 333e12, 40),
             mag=np.linspace(1.0, 0.05, 40),
         ),
@@ -739,10 +1058,12 @@ def test_app_logic_relative_anchor_uses_crisp_reconstructed_formfactor():
     ffsq = np.exp(-0.5 * ((freq_hz / 1e12) / 18.0) ** 2)
     crisp_input = LoadedMeasurement(
         label="Loaded CRISP",
-        measured=MeasuredFormFactor(freq=freq_hz, mag=np.sqrt(ffsq)),
-        crisp_input=CrispReconstructionInput(
-            freq_hz=freq_hz,
-            ffsq=ffsq,
+        measured=Measurement(freq=freq_hz, mag=np.sqrt(ffsq)),
+        crisp_input=SquaredMagnitudeMeasurement(
+            freq=freq_hz,
+            mag=ffsq,
+            mag_std=np.zeros_like(freq_hz),
+            detection_limit=np.zeros_like(freq_hz),
             charge_c=250e-12,
         ),
         kind="crisp",
@@ -765,7 +1086,7 @@ def test_app_logic_replace_loaded_ocean_measurements_preserves_crisp(tmp_path):
     logic = AppLogic()
     crisp = LoadedMeasurement(
         label="Loaded CRISP",
-        measured=MeasuredFormFactor(
+        measured=Measurement(
             freq=np.array([10e12, 20e12]),
             mag=np.array([0.9, 0.7]),
         ),
@@ -775,7 +1096,7 @@ def test_app_logic_replace_loaded_ocean_measurements_preserves_crisp(tmp_path):
     )
     stale_ocean = LoadedMeasurement(
         label="Stale Ocean",
-        measured=MeasuredFormFactor(
+        measured=Measurement(
             freq=np.array([130e12, 150e12]),
             mag=np.array([0.2, 0.1]),
         ),
@@ -837,7 +1158,7 @@ def test_app_logic_replace_loaded_ocean_measurements_error_preserves_state(tmp_p
     logic = AppLogic()
     crisp = LoadedMeasurement(
         label="Loaded CRISP",
-        measured=MeasuredFormFactor(freq=np.array([10e12]), mag=np.array([0.9])),
+        measured=Measurement(freq=np.array([10e12]), mag=np.array([0.9])),
         kind="crisp",
         calibration="absolute_or_calibrated",
     )
@@ -981,8 +1302,8 @@ def test_app_logic_uses_detector_simulation_for_visible_and_crisp_input():
     assert visible[0].label == "CRISP detector simulation"
     assert visible[0].measured.freq.shape == (240,)
     assert_allclose(active[0].mag, visible[0].measured.mag)
-    assert_allclose(crisp_input.ffsq, active[0].mag**2)
-    assert np.all(crisp_input.ffsq_std > 0.0)
+    assert_allclose(crisp_input.mag, active[0].mag**2)
+    assert np.all(crisp_input.mag_std > 0.0)
     assert np.all(crisp_input.detection_limit > 0.0)
 
 
@@ -1195,7 +1516,7 @@ def test_app_logic_export_writes_measurements_and_summary(tmp_path):
         ),
         LoadedMeasurement(
             label="Ocean NIR relative |F|",
-            measured=MeasuredFormFactor(
+            measured=Measurement(
                 freq=np.array([130e12, 150e12]),
                 mag=np.array([1.0, 0.8]),
             ),

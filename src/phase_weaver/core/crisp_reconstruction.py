@@ -7,6 +7,7 @@ from scipy.optimize import curve_fit, minimize_scalar
 from scipy.signal import savgol_filter
 
 from .base import DCPhysicalRFFT, FormFactor, Grid, Profile
+from .measurement import SquaredMagnitudeMeasurement
 from .utils import fwhm_highest_peak
 
 THZ_TO_HZ = 1e12
@@ -55,41 +56,6 @@ class CrispReconstructionConfig:
 
 
 @dataclass(slots=True)
-class CrispReconstructionInput:
-    freq_hz: np.ndarray
-    ffsq: np.ndarray
-    ffsq_std: np.ndarray | None = None
-    detection_limit: np.ndarray | None = None
-    charge_c: float = 250e-12
-    max_frequency_thz: float | None = None
-    shot_index: int | None = None
-    timestamp: float | None = None
-
-    def __post_init__(self) -> None:
-        self.freq_hz = np.asarray(self.freq_hz, dtype=float)
-        self.ffsq = np.asarray(self.ffsq, dtype=float)
-        if self.ffsq_std is None:
-            self.ffsq_std = np.zeros_like(self.ffsq)
-        else:
-            self.ffsq_std = np.asarray(self.ffsq_std, dtype=float)
-        if self.detection_limit is None:
-            self.detection_limit = np.zeros_like(self.ffsq)
-        else:
-            self.detection_limit = np.asarray(self.detection_limit, dtype=float)
-
-        shapes = {
-            self.freq_hz.shape,
-            self.ffsq.shape,
-            self.ffsq_std.shape,
-            self.detection_limit.shape,
-        }
-        if len(shapes) != 1 or self.freq_hz.ndim != 1:
-            raise ValueError("CRISP input arrays must be 1D arrays with equal shape")
-        if len(self.freq_hz) == 0:
-            raise ValueError("CRISP input arrays must not be empty")
-
-
-@dataclass(slots=True)
 class CrispPreprocessedInput:
     freq_thz: np.ndarray
     ffsq: np.ndarray
@@ -130,10 +96,10 @@ class CrispReconstructionResult:
 
 
 def preprocess_crisp_input(
-    raw: CrispReconstructionInput,
+    raw: SquaredMagnitudeMeasurement,
     config: CrispReconstructionConfig = CrispReconstructionConfig(),
 ) -> CrispPreprocessedInput:
-    num_input_points = len(raw.freq_hz)
+    num_input_points = len(raw.freq)
     keep = np.ones(num_input_points, dtype=bool)
     for channel in config.channels_to_remove:
         if channel >= num_input_points:
@@ -142,11 +108,11 @@ def preprocess_crisp_input(
             )
         keep[channel] = False
 
-    assert raw.ffsq_std is not None
+    assert raw.mag_std is not None
     assert raw.detection_limit is not None
-    freq_hz = raw.freq_hz[keep]
-    ffsq_input = raw.ffsq[keep]
-    ffsq_std_input = raw.ffsq_std[keep]
+    freq_hz = raw.freq[keep]
+    ffsq_input = raw.mag[keep]
+    ffsq_std_input = raw.mag_std[keep]
     detection_limit_input = raw.detection_limit[keep]
     if len(freq_hz) < config.min_input_points:
         raise ValueError(
@@ -585,19 +551,20 @@ class CrispReconstruction:
 
     def __init__(
         self,
-        data: CrispReconstructionInput,
+        data: SquaredMagnitudeMeasurement,
         config: CrispReconstructionConfig = CrispReconstructionConfig(),
     ) -> None:
         self.data = data
         if data.max_frequency_thz is not None:
             config = replace(config, max_frequency_thz=data.max_frequency_thz)
         self.config = config
+        self.charge_c = data.charge_c if data.charge_c is not None else 250e-12
         self.last_iterations = 0
         self.last_stop_reason = "not_run"
         self.diagnostics: CrispDiagnostics | None = None
 
     def run(self) -> CrispReconstructionResult:
-        if self.data.charge_c < self.config.min_charge_c:
+        if self.charge_c < self.config.min_charge_c:
             raise ValueError("no_beam")
 
         pre = preprocess_crisp_input(self.data, self.config)
@@ -655,11 +622,11 @@ class CrispReconstruction:
         profile_sum = float(np.sum(profile))
         if profile_sum <= 0.0:
             raise ValueError("invalid_input: reconstructed profile has zero area")
-        current_a = profile * ((self.data.charge_c / self.config.dt_s) / profile_sum)
+        current_a = profile * ((self.charge_c / self.config.dt_s) / profile_sum)
 
         grid = Grid(N=self.config.num_output_points, dt=self.config.dt_s)
-        density = current_a / self.data.charge_c
-        prof = Profile(grid=grid, values=density, charge=self.data.charge_c)
+        density = current_a / self.charge_c
+        prof = Profile(grid=grid, values=density, charge=self.charge_c)
         ff_recon = prof.to_form_factor(
             transform=DCPhysicalRFFT(unwrap_phase=True, dc_normalize=True)
         )

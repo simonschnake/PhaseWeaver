@@ -1,6 +1,6 @@
 # PhaseWeaver Project State
 
-Last updated: 2026-06-21
+Last updated: 2026-08-28
 
 ## Executive Summary
 
@@ -15,7 +15,7 @@ first CRISP path:
 - Latest-shot selection by timestamp, with explicit shot-index support in the
   loader.
 - GUI shot selection for multi-shot HDF5 files, defaulting to the latest shot.
-- Conversion of CRISP form-factor-squared values to `MeasuredFormFactor`
+- Conversion of CRISP form-factor-squared values to `Measurement`
   magnitudes for plotting and generic reconstruction.
 - Preservation of the original CRISP `|F|^2` values, standard deviation,
   detection limit, shot index, timestamp, and charge for CRISP-style
@@ -72,7 +72,7 @@ The intended data interpretation is:
 - CRISP form-factor service output is calibrated form-factor squared:
   `|F(f)|^2 = corrected_signal / charge^2 / detector_response`.
 - PhaseWeaver plots and generic reconstruction use `|F|`, so CRISP `|F|^2`
-  becomes `sqrt(|F|^2)` for `MeasuredFormFactor`.
+  becomes `sqrt(|F|^2)` for `Measurement`.
 - The CRISP reconstruction algorithm should keep using the original `|F|^2`
   input because that is what the upstream algorithm expects.
 - Ocean/NIR spectra are wavelength/intensity data in arbitrary units. They
@@ -87,9 +87,10 @@ The active GUI remains a focused plotting workbench:
 
 - Main view: time-domain current/profile plot and frequency-domain
   magnitude/phase plot.
-- `File > Load Measurements...`: loads `.npz`, `.h5`, and `.hdf5` measurement
-  files, including CRISP form-factor data and Ocean/NIR spectra from HDF5 when
-  available.
+- `File > Load CRISP...`: loads a validated CRISP shot from `.h5` or `.hdf5`
+  without importing unrelated instrument data from the same recording.
+- `File > Load IR Measurement...`: loads a validated Ocean/NIR dataset and
+  replaces only the existing IR measurement.
 - `File > Export Data...`: writes plot arrays, loaded measurement arrays,
   profile/reconstruction settings, reconstruction summary, and CRISP diagnostics
   when available.
@@ -107,7 +108,7 @@ The reconstruction workflow is now:
 1. Build or update the toy-model input profile.
 2. Compute its reference form factor for visualization and simulated fallback
    measurements.
-3. Optionally load `.npz` or CRISP HDF5 measurements.
+3. Optionally load a CRISP HDF5 shot and/or an Ocean/NIR measurement.
 4. Pick `Gerchberg-Saxton` or `CRISP`.
 5. Optionally enable `Use IR as relative constraint` for Gerchberg-Saxton or
    CRISP.
@@ -119,7 +120,7 @@ The reconstruction workflow is now:
 ## Current Repository Snapshot
 
 - Branch: `main`
-- Package version: `0.6.0`
+- Package version: `0.7.0`
 - Python package layout: `src/phase_weaver`
 - GUI framework: PySide6
 - Plotting: pyqtgraph
@@ -214,39 +215,9 @@ Known differences and caveats:
 
 ## Verification Results
 
-Latest verified before this commit:
-
-```bash
-uv run pytest tests
-```
-
-Result: pass.
-
-- 290 tests collected.
-- 289 passed.
-- 1 skipped because the optional reference HDF5 recording was not present in
-  the checked path.
-
-```bash
-uv run ruff check src/phase_weaver/app/logic.py src/phase_weaver/core/reconstruction.py src/phase_weaver/core/constraints.py src/phase_weaver/app/ui/reconstruction_panel.py src/phase_weaver/app/ui/main_window.py tests/app/test_logic.py tests/app/test_controls_panel.py tests/core/test_reconstruction.py
-```
-
-Result: pass.
-
-```bash
-QT_QPA_PLATFORM=offscreen uv run python -c "<construct QApplication and MainWindow, quit after 200 ms>"
-```
-
-Result: pass.
-
-The app window constructs and enters/exits the Qt event loop in offscreen mode.
-
-Static tooling status has not been made a release gate yet:
-
-- `ruff check .` still needs a focused cleanup pass before it should be treated
-  as a required green check.
-- `basedpyright` still has known PySide/test typing noise and architecture
-  cleanup work before it can be used as a hard gate.
+The unit suite, smoke suite, Ruff checks, basedpyright checks, and headless GUI
+construction check complete successfully. The optional reference-HDF5 comparison
+remains conditional on local sample data that is intentionally not committed.
 
 ## Steps Forward
 
@@ -269,12 +240,7 @@ Static tooling status has not been made a release gate yet:
    Store measurement kind, squared-vs-magnitude semantics, source file, shot
    index, timestamp, charge, calibration state, and processing choices.
 
-5. Clean static tooling drift.
-   Bring Ruff close to green first. Treat basedpyright as a later architecture
-   pass because several issues are PySide stub friction or broader type design
-   questions.
-
-6. Keep the main UI focused.
+5. Keep the main UI focused.
    Preserve the two-plot main window. Put data selection, shot selection,
    reconstruction settings, and future Ocean processing controls into explicit
    menus or tool windows.

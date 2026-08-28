@@ -13,4 +13,4 @@ test:
 	MPLCONFIGDIR=$(MPLCONFIGDIR) $(PYTEST) tests
 
 smoke:
-	MPLCONFIGDIR=$(MPLCONFIGDIR) $(PYTEST) tests/core/test_reconstruction.py tests/core/test_measurement.py
+	MPLCONFIGDIR=$(MPLCONFIGDIR) $(PYTEST) tests/core/test_reconstruction.py tests/core/test_measurement_family.py

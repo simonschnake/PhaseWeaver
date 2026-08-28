@@ -12,13 +12,13 @@ It enforces simple physical constraints (non-negativity, centering, fixed total 
 
 ## Project Status
 
-As of 2026-06-18, the interactive reconstruction workflow is working end to end
-and the project has a first CRISP-aware path:
+The interactive reconstruction workflow works end to end and includes a
+CRISP-aware path:
 
 - input profile and spectrum plots update live from the toy model controls
 - magnitude-only reconstruction is overlaid against the input for direct comparison
-- measurement overlays now follow the active CRISP / IR selections, and loaded measurement files still take precedence when present
-- `.npz`, `.h5`, and `.hdf5` measurement files can be loaded
+- measurement overlays follow the active CRISP / IR selections, and loaded measurement files take precedence when present
+- CRISP HDF5 recordings and Ocean/NIR measurement files are loaded through separate, validated actions
 - CRISP HDF5 form-factor-squared data is converted to magnitude for plotting while preserving the original squared values for CRISP reconstruction
 - reconstruction can run with either the generic Gerchberg-Saxton path or the new CRISP-style algorithm
 - CRISP diagnostics are exported with run data when available

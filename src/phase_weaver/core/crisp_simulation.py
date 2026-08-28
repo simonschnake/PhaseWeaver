@@ -5,6 +5,7 @@ from typing import Literal
 
 import numpy as np
 
+from .measurement import CalibrationStatus, MeasurementKind, SquaredMagnitudeMeasurement
 
 ChannelSet = Literal["low", "high", "both"]
 
@@ -120,24 +121,17 @@ class CrispSimulationConfig:
             raise ValueError("channel_set must be 'low', 'high', or 'both'")
 
 
-@dataclass(slots=True)
-class CrispSimulationResult:
-    freq_hz: np.ndarray
-    ffabs: np.ndarray
-    ffabs_std: np.ndarray
-    detection_limit: np.ndarray
-    ffsq: np.ndarray
-    ffsq_std: np.ndarray
-    ffsq_detection_limit: np.ndarray
-
-
 def simulate_crisp_measurement(
     time_s: np.ndarray,
     current_a: np.ndarray,
     charge_c: float,
     config: CrispSimulationConfig = CrispSimulationConfig(),
-) -> CrispSimulationResult:
-    """Simulate a calibrated CRISP form-factor measurement from a current profile."""
+) -> SquaredMagnitudeMeasurement:
+    """Simulate a calibrated CRISP form-factor measurement from a current profile.
+
+    Returns a :class:`SquaredMagnitudeMeasurement` carrying the calibrated
+    ``|F|^2`` (absolute). Use ``.as_magnitude()`` for the magnitude view.
+    """
     time_s = np.asarray(time_s, dtype=float)
     current_a = np.asarray(current_a, dtype=float)
     if time_s.ndim != 1 or current_a.ndim != 1 or time_s.shape != current_a.shape:
@@ -197,14 +191,15 @@ def simulate_crisp_measurement(
     detection_limit = np.sqrt(noise_std_v / response) / charge_nc
     ffabs = np.abs(ffabs_signed)
 
-    return CrispSimulationResult(
-        freq_hz=frequencies_hz,
-        ffabs=ffabs,
-        ffabs_std=ffabs_std,
-        detection_limit=detection_limit,
-        ffsq=ffabs**2,
-        ffsq_std=2.0 * ffabs * ffabs_std,
-        ffsq_detection_limit=detection_limit**2,
+    return SquaredMagnitudeMeasurement(
+        freq=frequencies_hz,
+        mag=ffabs**2,
+        mag_std=2.0 * ffabs * ffabs_std,
+        detection_limit=detection_limit**2,
+        kind=MeasurementKind.CRISP,
+        calibration=CalibrationStatus.ABSOLUTE,
+        label="CRISP detector simulation",
+        source=f"crisp_simulation(seed={config.seed}, n_shots={config.n_shots})",
     )
 
 

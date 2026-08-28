@@ -1,6 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 import h5py
 import numpy as np
@@ -27,17 +28,19 @@ from phase_weaver.core.crisp_reconstruction import (
     CrispDiagnostics,
     CrispReconstruction,
     CrispReconstructionConfig,
-    CrispReconstructionInput,
 )
 from phase_weaver.core.crisp_simulation import (
     CrispSimulationConfig,
-    CrispSimulationResult,
     simulate_crisp_measurement,
 )
-from phase_weaver.core.measurement import MeasuredFormFactor
+from phase_weaver.core.measurement import (
+    CalibrationStatus,
+    Measurement,
+    MeasurementKind,
+    SquaredMagnitudeMeasurement,
+)
 from phase_weaver.core.ocean_simulation import (
     OceanSimulationConfig,
-    OceanSimulationResult,
     simulate_ocean_measurement,
 )
 from phase_weaver.core.reconstruction import (
@@ -45,8 +48,12 @@ from phase_weaver.core.reconstruction import (
     ReconstructionAlgorithm,
     ReconstructionHistory,
 )
+from phase_weaver.core.pipeline import CrispThenIrSeed, ReconstructionPipeline
 
+from .loading import MeasurementLoader
+from .export import NpzExporter
 from .plot_model import SpectrumPlotModel, TimePlotModel
+from .simulation import SimulationService
 from .state import ControlsState, MeasurementState, ProfileModel, ReconstructionState
 
 CRISP_FORMFACTOR_XY_KEY = (
@@ -83,8 +90,8 @@ class ReferenceCurrentProfile:
 @dataclass(slots=True)
 class LoadedMeasurement:
     label: str
-    measured: MeasuredFormFactor
-    crisp_input: CrispReconstructionInput | None = None
+    measured: Measurement
+    crisp_input: SquaredMagnitudeMeasurement | None = None
     reference_current: ReferenceCurrentProfile | None = None
     kind: str = "unknown"
     calibration: str = "unknown"
@@ -113,6 +120,16 @@ class ReconstructionSummary:
     relative_measurement_count: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class ReconstructionRequest:
+    grid: Grid
+    measurements: tuple[Measurement, ...]
+    controls_state: ControlsState
+    ff_input: FormFactor | None
+    measurement_source: str
+    input_profile: Profile | None
+
+
 def _decode_label(value: object, fallback: str) -> str:
     arr = np.asarray(value)
     if arr.shape == ():
@@ -129,16 +146,20 @@ def _ocean_relative_measurement_from_wavelength_signal(
     signal_std: np.ndarray | None = None,
 ) -> LoadedMeasurement | None:
     wavelength_nm = np.asarray(wavelength_nm, dtype=float)
-    signal = np.maximum(np.asarray(signal, dtype=float), 0.0)
+    signal = np.asarray(signal, dtype=float)
+    if wavelength_nm.ndim != 1 or signal.ndim != 1:
+        raise ValueError("Ocean/NIR wavelength and signal must be 1D arrays")
+    if wavelength_nm.shape != signal.shape:
+        raise ValueError("Ocean/NIR wavelength and signal must have matching shapes")
+    if np.any(~np.isfinite(wavelength_nm)) or np.any(wavelength_nm <= 0.0):
+        raise ValueError("Ocean/NIR wavelength must be finite and positive")
+    if np.any(~np.isfinite(signal)) or np.any(signal < 0.0):
+        raise ValueError("Ocean/NIR signal must be finite and non-negative")
     if signal_std is not None:
         signal_std = np.asarray(signal_std, dtype=float)
         if signal_std.shape != signal.shape:
             raise ValueError("Ocean signal uncertainty must match the signal shape")
-    valid = (
-        np.isfinite(wavelength_nm)
-        & np.isfinite(signal)
-        & (wavelength_nm > 0.0)
-    )
+    valid = np.ones(wavelength_nm.shape, dtype=bool)
     if signal_std is not None:
         valid &= np.isfinite(signal_std) & (signal_std >= 0.0)
     if not np.any(valid):
@@ -178,7 +199,7 @@ def _ocean_relative_measurement_from_wavelength_signal(
 
     return LoadedMeasurement(
         label="Ocean NIR relative |F|",
-        measured=MeasuredFormFactor(
+        measured=Measurement(
             freq=frequency_hz[band],
             mag=np.clip(mag_like / scale, 0.0, 1.0),
             mag_std=mag_std,
@@ -225,9 +246,16 @@ def load_measurements_npz(path: str | Path) -> tuple[LoadedMeasurement, ...]:
                 raise ValueError("cor2d npz spec_hist must be a 2D array")
             if spectrum_history.shape[1] < len(wavelength_nm):
                 raise ValueError("cor2d npz spec_hist must cover phen_scale length")
+            # Cor2d samples are background-corrected and can therefore contain
+            # small negative noise values.  They do not represent negative
+            # intensity; clamp the averaged signal before taking its square root.
+            signal = np.maximum(
+                np.nanmean(spectrum_history[:, : len(wavelength_nm)], axis=0),
+                0.0,
+            )
             measurement = _ocean_relative_measurement_from_wavelength_signal(
                 wavelength_nm,
-                np.nanmean(spectrum_history[:, : len(wavelength_nm)], axis=0),
+                signal,
                 signal_std=(
                     np.nanstd(
                         spectrum_history[:, : len(wavelength_nm)],
@@ -245,7 +273,7 @@ def load_measurements_npz(path: str | Path) -> tuple[LoadedMeasurement, ...]:
             return (
                 LoadedMeasurement(
                     label=label,
-                    measured=MeasuredFormFactor(freq=data["freq_hz"], mag=data["mag"]),
+                    measured=Measurement(freq=data["freq_hz"], mag=data["mag"]),
                 ),
             )
 
@@ -283,7 +311,7 @@ def load_measurements_npz(path: str | Path) -> tuple[LoadedMeasurement, ...]:
             measurements.append(
                 LoadedMeasurement(
                     label=label,
-                    measured=MeasuredFormFactor(freq=data[freq_key], mag=data[mag_key]),
+                    measured=Measurement(freq=data[freq_key], mag=data[mag_key]),
                 )
             )
 
@@ -311,9 +339,9 @@ def _format_timestamp(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
 
 
-def _h5_shot_to_measured_formfactor(shot: np.ndarray) -> MeasuredFormFactor:
-    freq_thz = shot[:, 0]
-    formfactor_squared = shot[:, 1]
+def _h5_shot_to_measured_formfactor(shot: np.ndarray) -> Measurement:
+    freq_thz = np.asarray(shot[:, 0], dtype=float)
+    formfactor_squared = np.asarray(shot[:, 1], dtype=float)
     valid = (
         np.isfinite(freq_thz)
         & np.isfinite(formfactor_squared)
@@ -322,7 +350,7 @@ def _h5_shot_to_measured_formfactor(shot: np.ndarray) -> MeasuredFormFactor:
     if not np.any(valid):
         raise ValueError("CRISP shot does not contain any finite non-negative points")
 
-    return MeasuredFormFactor(
+    return Measurement(
         freq=freq_thz[valid] * THZ_TO_HZ,
         mag=np.sqrt(formfactor_squared[valid]),
     )
@@ -338,20 +366,33 @@ def _h5_shot_to_crisp_input(
     max_frequency_thz: float | None,
     shot_index: int,
     timestamp: float,
-) -> CrispReconstructionInput:
+) -> SquaredMagnitudeMeasurement:
     freq_thz = np.asarray(shot[:, 0], dtype=float)
     valid_freq = np.isfinite(freq_thz)
     if not np.any(valid_freq):
         raise ValueError("CRISP shot does not contain any finite frequencies")
-    return CrispReconstructionInput(
-        freq_hz=freq_thz[valid_freq] * THZ_TO_HZ,
-        ffsq=ffsq_input[valid_freq],
-        ffsq_std=ffsq_std[valid_freq],
-        detection_limit=detection_limit[valid_freq],
+    num_valid = int(np.count_nonzero(valid_freq))
+    freq_hz = freq_thz[valid_freq] * THZ_TO_HZ
+    mag_sq = np.asarray(ffsq_input, dtype=float)[valid_freq]
+    return SquaredMagnitudeMeasurement(
+        freq=freq_hz,
+        mag=mag_sq,
+        mag_std=(
+            np.asarray(ffsq_std, dtype=float)[valid_freq]
+            if ffsq_std is not None
+            else np.zeros(num_valid)
+        ),
+        detection_limit=(
+            np.asarray(detection_limit, dtype=float)[valid_freq]
+            if detection_limit is not None
+            else np.zeros(num_valid)
+        ),
+        kind=MeasurementKind.CRISP,
+        calibration=CalibrationStatus.ABSOLUTE,
+        label="CRISP",
+        source=f"h5:shot={shot_index}",
         charge_c=charge_c,
         max_frequency_thz=max_frequency_thz,
-        shot_index=shot_index,
-        timestamp=timestamp,
     )
 
 
@@ -373,6 +414,7 @@ def _h5_optional_shot_array(
     *,
     selected_index: int,
     expected_shape: tuple[int, int],
+    allow_raw_values: bool = False,
 ) -> np.ndarray:
     if key not in data:
         return np.zeros(expected_shape[1], dtype=float)
@@ -382,7 +424,12 @@ def _h5_optional_shot_array(
         raise ValueError(
             f"CRISP dataset {key!r} must have shape {expected_shape}, got {values.shape}"
         )
-    return values[selected_index]
+    selected = values[selected_index]
+    if not allow_raw_values and (
+        np.any(~np.isfinite(selected)) or np.any(selected < 0.0)
+    ):
+        raise ValueError(f"CRISP dataset {key!r} must be finite and non-negative")
+    return selected
 
 
 def _h5_optional_reference_current(
@@ -458,7 +505,7 @@ def list_h5_measurement_shots(path: str | Path) -> tuple[H5MeasurementShot, ...]
         if TIMESTAMP_KEY not in data:
             raise ValueError(f"measurement h5 must contain {TIMESTAMP_KEY!r}")
 
-        xy = data[CRISP_FORMFACTOR_XY_KEY]
+        xy = cast(h5py.Dataset, data[CRISP_FORMFACTOR_XY_KEY])
         timestamps = np.asarray(data[TIMESTAMP_KEY], dtype=float)
         _validate_h5_measurement_data(xy, timestamps)
 
@@ -473,7 +520,7 @@ def list_h5_measurement_shots(path: str | Path) -> tuple[H5MeasurementShot, ...]
 
 
 def load_measurements_h5(
-    path: str | Path, shot_index: int | None = None
+    path: str | Path, shot_index: int | None = None, *, include_ocean: bool = True
 ) -> tuple[LoadedMeasurement, ...]:
     path = Path(path)
     with h5py.File(path, "r") as data:
@@ -484,9 +531,10 @@ def load_measurements_h5(
         if TIMESTAMP_KEY not in data:
             raise ValueError(f"measurement h5 must contain {TIMESTAMP_KEY!r}")
 
-        xy = data[CRISP_FORMFACTOR_XY_KEY]
+        xy = cast(h5py.Dataset, data[CRISP_FORMFACTOR_XY_KEY])
         timestamps = np.asarray(data[TIMESTAMP_KEY], dtype=float)
         _validate_h5_measurement_data(xy, timestamps)
+        num_shots = int(np.asarray(xy).shape[0])
 
         selected_index = int(np.argmax(timestamps)) if shot_index is None else shot_index
         if selected_index < 0 or selected_index >= len(timestamps):
@@ -500,6 +548,7 @@ def load_measurements_h5(
             CRISP_INPUT_FFSQ_KEY,
             selected_index=selected_index,
             expected_shape=expected_optional_shape,
+            allow_raw_values=True,
         )
         if CRISP_INPUT_FFSQ_KEY not in data:
             ffsq_input = np.asarray(shot[:, 1], dtype=float)
@@ -520,15 +569,9 @@ def load_measurements_h5(
         reference_current = _h5_optional_reference_current(
             data,
             selected_index=selected_index,
-            num_shots=xy.shape[0],
+            num_shots=num_shots,
             charge_c=charge_c,
         )
-        ocean_measurement = _h5_optional_ocean_measurement(
-            data,
-            selected_index=selected_index,
-            num_shots=xy.shape[0],
-        )
-
     measured_at = _format_timestamp(timestamp)
     label = f"CRISP latest {measured_at}" if shot_index is None else f"CRISP {measured_at}"
     loaded = [
@@ -554,8 +597,15 @@ def load_measurements_h5(
             calibration="absolute_or_calibrated",
         ),
     ]
-    if ocean_measurement is not None:
-        loaded.append(ocean_measurement)
+    if include_ocean:
+        with h5py.File(path, "r") as data:
+            ocean_measurement = _h5_optional_ocean_measurement(
+                data,
+                selected_index=selected_index,
+                num_shots=num_shots,
+            )
+        if ocean_measurement is not None:
+            loaded.append(ocean_measurement)
     return tuple(loaded)
 
 
@@ -571,18 +621,65 @@ def load_measurements_file(
     raise ValueError("measurement file must be a .npz, .h5, or .hdf5 file")
 
 
+def load_crisp_measurements_file(
+    path: str | Path, h5_shot_index: int | None = None
+) -> tuple[LoadedMeasurement, ...]:
+    path = Path(path)
+    if path.suffix.lower() in {".h5", ".hdf5"}:
+        return load_measurements_h5(
+            path,
+            shot_index=h5_shot_index,
+            include_ocean=False,
+        )
+    raise ValueError("CRISP measurements must be loaded from an HDF5 recording")
+
+
+def load_ir_measurements_file(
+    path: str | Path, h5_shot_index: int | None = None
+) -> tuple[LoadedMeasurement, ...]:
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix == ".npz":
+        return load_measurements_npz(path)
+    if suffix in {".h5", ".hdf5"}:
+        loaded = load_measurements_h5(path, shot_index=h5_shot_index)
+        infrared = tuple(item for item in loaded if item.kind == "ocean_nir")
+        if not infrared:
+            raise ValueError("HDF5 recording does not contain a usable Ocean/NIR IR dataset")
+        return infrared
+    raise ValueError("IR measurements must be loaded from an Ocean/NIR NPZ or HDF5 file")
+
+
 class AppLogic:
     def __init__(self):
         self.phase_last: np.ndarray | None = None
         self.center_prof = CenterFirstMoment()
         self.loaded_measurements: tuple[LoadedMeasurement, ...] = ()
         self.reconstruction_summary = ReconstructionSummary()
+        self.measurement_loader = MeasurementLoader[LoadedMeasurement, H5MeasurementShot](
+            load_measurements_file,
+            list_h5_measurement_shots,
+            load_crisp_measurements_file,
+            load_ir_measurements_file,
+        )
+        self.npz_exporter = NpzExporter()
+        self.simulation_service = SimulationService(
+            self._simulate_crisp_detector_raw,
+            self._simulate_ocean_detector_raw,
+        )
+        self._reconstruction_pipeline = ReconstructionPipeline(
+            {
+                RECONSTRUCTION_ALGORITHM.GERCHBERG_SAXTON: self._run_gs_pipeline,
+                RECONSTRUCTION_ALGORITHM.CRISP: self._run_crisp_pipeline,
+            }
+        )
 
     def load_measurements(
         self, path: str | Path, h5_shot_index: int | None = None
     ) -> tuple[LoadedMeasurement, ...]:
-        self.loaded_measurements = load_measurements_file(
-            path, h5_shot_index=h5_shot_index
+        self.loaded_measurements = self.measurement_loader.load(
+            path,
+            h5_shot_index=h5_shot_index,
         )
         self.phase_last = None
         self.reconstruction_summary = ReconstructionSummary(
@@ -591,35 +688,52 @@ class AppLogic:
             status="not_run",
         )
         return self.loaded_measurements
+
+    def load_crisp_measurements(
+        self, path: str | Path, h5_shot_index: int | None = None
+    ) -> tuple[LoadedMeasurement, ...]:
+        loaded = self.measurement_loader.load_crisp(
+            path,
+            h5_shot_index=h5_shot_index,
+        )
+        self.loaded_measurements = loaded
+        self.phase_last = None
+        self.reconstruction_summary = ReconstructionSummary(
+            measurement_source="loaded",
+            measurement_count=len(loaded),
+            status="not_run",
+        )
+        return loaded
+
+    def load_ir_measurements(
+        self, path: str | Path, h5_shot_index: int | None = None
+    ) -> tuple[LoadedMeasurement, ...]:
+        loaded = self.measurement_loader.load_ir(path, h5_shot_index=h5_shot_index)
+        replacement = self.measurement_loader.replace_ocean(
+            self.loaded_measurements,
+            loaded,
+            kind=lambda item: item.kind,
+        )
+        self.loaded_measurements = replacement
+        self.phase_last = None
+        self.reconstruction_summary = ReconstructionSummary(
+            measurement_source="loaded",
+            measurement_count=len(replacement),
+            status="not_run",
+        )
+        return replacement
 
     def replace_loaded_ocean_measurements(
         self, path: str | Path
     ) -> tuple[LoadedMeasurement, ...]:
-        loaded = load_measurements_file(path)
-        ocean_measurements = tuple(
-            item for item in loaded if item.kind == "ocean_nir"
-        )
-        if not ocean_measurements:
-            raise ValueError("measurement file does not contain Ocean/NIR data")
-
-        preserved = tuple(
-            item for item in self.loaded_measurements if item.kind != "ocean_nir"
-        )
-        self.loaded_measurements = (*preserved, *ocean_measurements)
-        self.phase_last = None
-        self.reconstruction_summary = ReconstructionSummary(
-            measurement_source="loaded",
-            measurement_count=len(self.loaded_measurements),
-            status="not_run",
-        )
-        return self.loaded_measurements
+        return self.load_ir_measurements(path)
 
     def compute_initial(
         self, controls_state: ControlsState
     ) -> tuple[
         Profile,
         FormFactor,
-        tuple[MeasuredFormFactor, ...],
+        tuple[Measurement, ...],
     ]:
         prof_input = self.compute_input_profile(controls_state)
         ff_input = self.compute_input_formfactor(prof_input)
@@ -633,7 +747,67 @@ class AppLogic:
     def compute_reconstruction(
         self,
         grid: Grid,
-        measurements: tuple[MeasuredFormFactor, ...],
+        measurements: tuple[Measurement, ...],
+        controls_state: ControlsState,
+        ff_input: FormFactor | None,
+        measurement_source: str = "simulated",
+        input_profile: Profile | None = None,
+    ) -> tuple[Profile, FormFactor, ReconstructionSummary]:
+        request = ReconstructionRequest(
+            grid=grid,
+            measurements=measurements,
+            controls_state=controls_state,
+            ff_input=ff_input,
+            measurement_source=measurement_source,
+            input_profile=input_profile,
+        )
+        return self._reconstruction_pipeline.run(
+            controls_state.reconstruction.algorithm,
+            request,
+        )
+
+    def _run_gs_pipeline(
+        self, request: ReconstructionRequest
+    ) -> tuple[Profile, FormFactor, ReconstructionSummary]:
+        state = replace(
+            request.controls_state,
+            reconstruction=replace(
+                request.controls_state.reconstruction,
+                algorithm=RECONSTRUCTION_ALGORITHM.GERCHBERG_SAXTON,
+            ),
+        )
+        return self._compute_reconstruction_legacy(
+            request.grid,
+            request.measurements,
+            state,
+            request.ff_input,
+            request.measurement_source,
+            request.input_profile,
+        )
+
+    def _run_crisp_pipeline(
+        self, request: ReconstructionRequest
+    ) -> tuple[Profile, FormFactor, ReconstructionSummary]:
+        state = replace(
+            request.controls_state,
+            reconstruction=replace(
+                request.controls_state.reconstruction,
+                algorithm=RECONSTRUCTION_ALGORITHM.CRISP,
+            ),
+        )
+        return self._compute_reconstruction_legacy(
+            request.grid,
+            request.measurements,
+            state,
+            request.ff_input,
+            request.measurement_source,
+            request.input_profile,
+        )
+
+    def _compute_reconstruction_legacy(
+        self,
+        grid: Grid,
+        measurements: tuple[Measurement, ...],
         controls_state: ControlsState,
         ff_input: FormFactor | None,
         measurement_source: str = "simulated",
@@ -655,38 +829,17 @@ class AppLogic:
             )
             has_absolute_ir_measurement = len(measurements) > 1
             if has_absolute_ir_measurement or relative_measurements:
-                extension_state = self._crisp_extension_reconstruction_state(
-                    controls_state.reconstruction
-                )
-                extension = GerchbergSaxton(
-                    grid=result.form_factor.grid,
-                    measurements=measurements,
-                    reconstruction_state=extension_state,
-                    formfactor_input=result.form_factor,
-                    phase_last=result.form_factor.phase,
-                    relative_measurements=relative_measurements,
-                    relative_anchor_formfactor=result.form_factor,
-                    use_formfactor_input_magnitude=True,
-                )
-                profile, form_factor = extension.run()
-                profile.charge = result.profile.charge
-                summary = ReconstructionSummary(
-                    algorithm=f"{algorithm.value} + IR",
-                    measurement_source=measurement_source,
-                    measurement_count=len(measurements),
-                    iterations=result.diagnostics.num_iterations
-                    + extension.last_iterations,
-                    stop_reason=(
-                        f"crisp:{result.stop_reason}"
-                        f"+ir:{extension.last_stop_reason}"
+                extension = CrispThenIrSeed(
+                    crisp=lambda _request: result,
+                    extension=lambda _request, crisp_result: self._run_crisp_ir_extension(
+                        crisp_result,
+                        measurements=measurements,
+                        controls_state=controls_state,
+                        measurement_source=measurement_source,
+                        relative_measurements=relative_measurements,
                     ),
-                    measurement_error=extension.last_measurement_error,
-                    status="finished",
-                    history=extension.history,
-                    crisp_diagnostics=result.diagnostics,
-                    ir_relative_constraint_used=bool(relative_measurements),
-                    relative_measurement_count=len(relative_measurements),
                 )
+                profile, form_factor, summary = extension.run(None)
                 self.phase_last = form_factor.phase.copy()
                 self.reconstruction_summary = summary
                 return profile, form_factor, summary
@@ -742,6 +895,47 @@ class AppLogic:
         self.reconstruction_summary = summary
         return prof_recon, ff_recon, summary
 
+    def _run_crisp_ir_extension(
+        self,
+        result,
+        *,
+        measurements: tuple[Measurement, ...],
+        controls_state: ControlsState,
+        measurement_source: str,
+        relative_measurements: tuple[Measurement, ...],
+    ) -> tuple[Profile, FormFactor, ReconstructionSummary]:
+        extension_state = self._crisp_extension_reconstruction_state(
+            controls_state.reconstruction
+        )
+        extension = GerchbergSaxton(
+            grid=result.form_factor.grid,
+            measurements=measurements,
+            reconstruction_state=extension_state,
+            formfactor_input=result.form_factor,
+            phase_last=result.form_factor.phase,
+            relative_measurements=relative_measurements,
+            relative_anchor_formfactor=result.form_factor,
+            use_formfactor_input_magnitude=True,
+        )
+        profile, form_factor = extension.run()
+        profile.charge = result.profile.charge
+        summary = ReconstructionSummary(
+            algorithm=f"{RECONSTRUCTION_ALGORITHM.CRISP.value} + IR",
+            measurement_source=measurement_source,
+            measurement_count=len(measurements),
+            iterations=result.diagnostics.num_iterations + extension.last_iterations,
+            stop_reason=(
+                f"crisp:{result.stop_reason}+ir:{extension.last_stop_reason}"
+            ),
+            measurement_error=extension.last_measurement_error,
+            status="finished",
+            history=extension.history,
+            crisp_diagnostics=result.diagnostics,
+            ir_relative_constraint_used=bool(relative_measurements),
+            relative_measurement_count=len(relative_measurements),
+        )
+        return profile, form_factor, summary
+
     def _crisp_extension_reconstruction_state(
         self, reconstruction_state: ReconstructionState
     ) -> ReconstructionState:
@@ -762,7 +956,7 @@ class AppLogic:
         *,
         measurement_state: MeasurementState | None = None,
         form_factor: FormFactor | None = None,
-    ) -> tuple[MeasuredFormFactor, ...]:
+    ) -> tuple[Measurement, ...]:
         if not reconstruction_state.use_ir_relative_constraint:
             return ()
 
@@ -783,7 +977,7 @@ class AppLogic:
         *,
         measurement_state: MeasurementState | None = None,
         form_factor: FormFactor | None = None,
-    ) -> tuple[MeasuredFormFactor, ...]:
+    ) -> tuple[Measurement, ...]:
         relative = tuple(
             item.measured
             for item in self.loaded_measurements
@@ -823,12 +1017,12 @@ class AppLogic:
 
     def _active_crisp_input(
         self,
-        measurements: tuple[MeasuredFormFactor, ...],
+        measurements: tuple[Measurement, ...],
         controls_state: ControlsState,
         *,
         measurement_source: str,
         input_profile: Profile | None,
-    ) -> CrispReconstructionInput:
+    ) -> SquaredMagnitudeMeasurement:
         if measurement_source == "loaded":
             for item in self.loaded_measurements:
                 if item.crisp_input is not None:
@@ -852,12 +1046,31 @@ class AppLogic:
 
         measured = measurements[0]
         positive = measured.freq > 0.0
-        return CrispReconstructionInput(
-            freq_hz=measured.freq[positive],
-            ffsq=np.square(measured.mag[positive]),
-            ffsq_std=np.zeros(np.count_nonzero(positive), dtype=float),
-            detection_limit=np.zeros(np.count_nonzero(positive), dtype=float),
+        # Convert explicitly (never silently): the magnitude measurement is
+        # squared here with uncertainty propagated via .to_squared().
+        squared = measured.to_squared()
+        mag_std = (
+            squared.mag_std
+            if squared.mag_std is not None
+            else np.zeros_like(squared.mag)
+        )
+        detection_limit = (
+            squared.detection_limit
+            if squared.detection_limit is not None
+            else np.zeros_like(squared.mag)
+        )
+        return SquaredMagnitudeMeasurement(
+            freq=squared.freq[positive],
+            mag=squared.mag[positive],
+            mag_std=mag_std[positive],
+            detection_limit=detection_limit[positive],
+            kind=measured.kind,
+            calibration=measured.calibration,
+            label=measured.label,
+            source=f"{measured.source}; crisp_ideal",
             charge_c=controls_state.scenario.charge,
+            use_in_absolute_constraint=measured.use_in_absolute_constraint,
+            use_in_relative_constraint=measured.use_in_relative_constraint,
         )
 
     def compute_input_profile(self, app_state: ControlsState) -> Profile:
@@ -871,11 +1084,11 @@ class AppLogic:
     ) -> FormFactor:
         return prof.to_form_factor()
 
-    def _simulate_crisp_detector(
+    def _simulate_crisp_detector_raw(
         self,
         input_profile: Profile,
         measurement_state: MeasurementState,
-    ) -> CrispSimulationResult:
+    ) -> SquaredMagnitudeMeasurement:
         if input_profile.charge is None:
             raise ValueError("CRISP detector simulation requires profile charge")
         return simulate_crisp_measurement(
@@ -892,23 +1105,39 @@ class AppLogic:
         self,
         input_profile: Profile,
         measurement_state: MeasurementState,
-    ) -> CrispReconstructionInput:
-        simulation = self._simulate_crisp_detector(input_profile, measurement_state)
+    ) -> SquaredMagnitudeMeasurement:
+        simulation = self.simulation_service.simulate_crisp(
+            input_profile, measurement_state
+        )
         assert input_profile.charge is not None
         scale_sq = measurement_state.crisp_scale**2
-        return CrispReconstructionInput(
-            freq_hz=simulation.freq_hz,
-            ffsq=simulation.ffsq * scale_sq,
-            ffsq_std=simulation.ffsq_std * scale_sq,
-            detection_limit=simulation.ffsq_detection_limit * scale_sq,
+        ffsq_std = (
+            simulation.mag_std
+            if simulation.mag_std is not None
+            else np.zeros_like(simulation.mag)
+        )
+        detection_limit = (
+            simulation.detection_limit
+            if simulation.detection_limit is not None
+            else np.zeros_like(simulation.mag)
+        )
+        return SquaredMagnitudeMeasurement(
+            freq=simulation.freq,
+            mag=simulation.mag * scale_sq,
+            mag_std=ffsq_std * scale_sq,
+            detection_limit=detection_limit * scale_sq,
+            kind=simulation.kind,
+            calibration=simulation.calibration,
+            label=simulation.label,
+            source=simulation.source,
             charge_c=input_profile.charge,
         )
 
-    def _simulate_ocean_detector(
+    def _simulate_ocean_detector_raw(
         self,
         form_factor: FormFactor,
         measurement_state: MeasurementState,
-    ) -> OceanSimulationResult:
+    ) -> Measurement:
         return simulate_ocean_measurement(
             form_factor.grid.f_pos,
             form_factor.mag,
@@ -922,25 +1151,31 @@ class AppLogic:
         self,
         form_factor: FormFactor,
         measurement_state: MeasurementState,
-    ) -> MeasuredFormFactor:
-        simulation = self._simulate_ocean_detector(form_factor, measurement_state)
-        band = (
-            (simulation.freq_hz >= IR_MIN_HZ)
-            & (simulation.freq_hz <= IR_MAX_HZ)
+    ) -> Measurement:
+        simulation = self.simulation_service.simulate_ocean(
+            form_factor, measurement_state
         )
-        return MeasuredFormFactor(
-            freq=simulation.freq_hz[band],
+        band = (
+            (simulation.freq >= IR_MIN_HZ)
+            & (simulation.freq <= IR_MAX_HZ)
+        )
+        return Measurement(
+            freq=simulation.freq[band],
             mag=(
-                simulation.ffabs_relative[band]
+                simulation.mag[band]
                 * measurement_state.infrared_scale
             ),
             mag_std=(
-                simulation.ffabs_std[band]
+                simulation.mag_std[band]
                 * measurement_state.infrared_scale
+                if simulation.mag_std is not None
+                else None
             ),
             detection_limit=(
-                simulation.ffabs_detection_limit[band]
+                simulation.detection_limit[band]
                 * measurement_state.infrared_scale
+                if simulation.detection_limit is not None
+                else None
             ),
         )
 
@@ -950,29 +1185,29 @@ class AppLogic:
         measurement_state: MeasurementState,
         *,
         input_profile: Profile | None = None,
-    ) -> tuple[MeasuredFormFactor, ...]:
+    ) -> tuple[Measurement, ...]:
         freq = form_factor.grid.f_pos
         mag = form_factor.mag
         if not measurement_state.crisp and not measurement_state.infrared:
-            return (MeasuredFormFactor(freq=freq, mag=mag),)
+            return (Measurement(freq=freq, mag=mag),)
 
-        measured: list[MeasuredFormFactor] = []
+        measured: list[Measurement] = []
 
         if measurement_state.crisp:
             if measurement_state.crisp_simulation_mode == CRISP_SIMULATION_MODE.DETECTOR:
                 if input_profile is None:
                     raise ValueError("CRISP detector simulation requires the input profile")
-                simulation = self._simulate_crisp_detector(
+                simulation = self.simulation_service.simulate_crisp(
                     input_profile,
                     measurement_state,
                 )
-                freq_crisp = simulation.freq_hz
-                mag_crisp = simulation.ffabs * measurement_state.crisp_scale
+                freq_crisp = simulation.freq
+                mag_crisp = simulation.as_magnitude().mag * measurement_state.crisp_scale
             else:
                 mask_crisp = (freq >= CRISP_MIN_HZ) & (freq <= CRISP_MAX_HZ)
                 freq_crisp = freq[mask_crisp]
                 mag_crisp = mag[mask_crisp] * measurement_state.crisp_scale
-            meas_crisp = MeasuredFormFactor(freq=freq_crisp, mag=mag_crisp)
+            meas_crisp = Measurement(freq=freq_crisp, mag=mag_crisp)
 
             measured.append(meas_crisp)
 
@@ -986,7 +1221,7 @@ class AppLogic:
                 mask_ir = (freq >= IR_MIN_HZ) & (freq <= IR_MAX_HZ)
                 freq_ir = freq[mask_ir]
                 mag_ir = mag[mask_ir] * measurement_state.infrared_scale
-                meas_ir = MeasuredFormFactor(freq=freq_ir, mag=mag_ir)
+                meas_ir = Measurement(freq=freq_ir, mag=mag_ir)
 
             measured.append(meas_ir)
 
@@ -998,7 +1233,7 @@ class AppLogic:
         measurement_state: MeasurementState,
         *,
         input_profile: Profile | None = None,
-    ) -> tuple[tuple[MeasuredFormFactor, ...], str]:
+    ) -> tuple[tuple[Measurement, ...], str]:
         if self.loaded_measurements:
             return (
                 tuple(
@@ -1041,18 +1276,18 @@ class AppLogic:
             if measurement_state.crisp_simulation_mode == CRISP_SIMULATION_MODE.DETECTOR:
                 if input_profile is None:
                     raise ValueError("CRISP detector simulation requires the input profile")
-                simulation = self._simulate_crisp_detector(
+                simulation = self.simulation_service.simulate_crisp(
                     input_profile,
                     measurement_state,
                 )
-                crisp_measurement = MeasuredFormFactor(
-                    freq=simulation.freq_hz,
-                    mag=simulation.ffabs * measurement_state.crisp_scale,
+                crisp_measurement = Measurement(
+                    freq=simulation.freq,
+                    mag=simulation.as_magnitude().mag * measurement_state.crisp_scale,
                 )
                 crisp_label = "CRISP detector simulation"
             else:
                 mask_crisp = (freq >= CRISP_MIN_HZ) & (freq <= CRISP_MAX_HZ)
-                crisp_measurement = MeasuredFormFactor(
+                crisp_measurement = Measurement(
                     freq=freq[mask_crisp],
                     mag=mag[mask_crisp] * measurement_state.crisp_scale,
                 )
@@ -1081,7 +1316,7 @@ class AppLogic:
                 ir_use_in_reconstruction = False
             else:
                 mask_ir = (freq >= IR_MIN_HZ) & (freq <= IR_MAX_HZ)
-                ir_measurement = MeasuredFormFactor(
+                ir_measurement = Measurement(
                     freq=freq[mask_ir],
                     mag=mag[mask_ir] * measurement_state.infrared_scale,
                 )
@@ -1104,7 +1339,7 @@ class AppLogic:
     def _build_reconstruction(
         self,
         grid: Grid,
-        measurements: tuple[MeasuredFormFactor, ...],
+        measurements: tuple[Measurement, ...],
         recon_state: ReconstructionState,
         form_factor_input: FormFactor,
     ) -> ReconstructionAlgorithm:
@@ -1132,83 +1367,16 @@ class AppLogic:
         summary: ReconstructionSummary | None = None,
     ) -> None:
         summary = summary or self.reconstruction_summary
-        payload = {
-            "t": time_model.t_ui if time_model is not None else np.array([]),
-            "current_recon": time_model.current_recon_ui
-            if time_model is not None
-            else np.array([]),
-            "current_input": time_model.current_input_ui
-            if time_model is not None
-            else np.array([]),
-            "f": spectrum_model.f_ui if spectrum_model is not None else np.array([]),
-            "mag_recon": spectrum_model.mag_recon_ui
-            if spectrum_model is not None
-            else np.array([]),
-            "phase_recon": spectrum_model.phase_recon_ui
-            if spectrum_model is not None
-            else np.array([]),
-            "mag_input": spectrum_model.mag_input_ui
-            if spectrum_model is not None
-            else np.array([]),
-            "phase_input": spectrum_model.phase_input_ui
-            if spectrum_model is not None
-            else np.array([]),
-            "reconstruction_algorithm": np.array(summary.algorithm),
-            "measurement_source": np.array(summary.measurement_source),
-            "measurement_count": np.array(summary.measurement_count),
-            "reconstruction_status": np.array(summary.status),
-            "reconstruction_iterations": np.array(summary.iterations),
-            "reconstruction_stop_reason": np.array(summary.stop_reason),
-            "reconstruction_measurement_error": np.array(
-                np.nan
-                if summary.measurement_error is None
-                else summary.measurement_error
-            ),
-            "reconstruction_ir_relative_constraint_used": np.array(
-                summary.ir_relative_constraint_used
-            ),
-            "reconstruction_relative_measurement_count": np.array(
-                summary.relative_measurement_count
-            ),
-        }
-        if summary.history is not None:
-            payload.update(summary.history.as_arrays())
-        if summary.crisp_diagnostics is not None:
-            payload.update(self._crisp_diagnostics_payload(summary.crisp_diagnostics))
-
-        if controls_state is not None:
-            payload.update(self._state_payload(controls_state))
-
-        for i, item in enumerate(self.loaded_measurements):
-            payload[f"measurement_label_{i}"] = np.array(item.label)
-            payload[f"measurement_freq_hz_{i}"] = item.measured.freq
-            payload[f"measurement_mag_{i}"] = item.measured.mag
-            if item.measured.mag_std is not None:
-                payload[f"measurement_mag_std_{i}"] = item.measured.mag_std
-            if item.measured.detection_limit is not None:
-                payload[f"measurement_detection_limit_{i}"] = (
-                    item.measured.detection_limit
-                )
-            payload[f"measurement_kind_{i}"] = np.array(item.kind)
-            payload[f"measurement_calibration_{i}"] = np.array(item.calibration)
-            payload[f"measurement_use_in_reconstruction_{i}"] = np.array(
-                item.use_in_reconstruction
-            )
-            if item.reference_current is not None:
-                payload[f"measurement_reference_current_label_{i}"] = np.array(
-                    item.reference_current.label
-                )
-                payload[f"measurement_reference_current_time_s_{i}"] = (
-                    item.reference_current.time_s
-                )
-                payload[f"measurement_reference_current_a_{i}"] = (
-                    item.reference_current.current_a
-                )
-                payload[f"measurement_reference_current_max_frequency_thz_{i}"] = (
-                    np.array(item.reference_current.inferred_max_frequency_thz)
-                )
-
-        np.savez(file=path, **payload)
+        self.npz_exporter.export_npz(
+            path,
+            time_model,
+            spectrum_model,
+            summary=summary,
+            controls_state=controls_state,
+            loaded_measurements=self.loaded_measurements,
+            crisp_diagnostics_payload=self._crisp_diagnostics_payload,
+            state_payload=self._state_payload,
+        )
 
     def _crisp_diagnostics_payload(
         self, diagnostics: CrispDiagnostics

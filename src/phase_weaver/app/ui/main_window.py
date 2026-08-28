@@ -149,7 +149,7 @@ class MainWindow(QMainWindow):
     def _create_menus(self) -> None:
         self.file_menu = QMenu("File", self)
         self.menuBar().addMenu(self.file_menu)
-        load_measurements_action = QAction("Load Measurements...", self)
+        load_measurements_action = QAction("Load CRISP...", self)
         load_measurements_action.triggered.connect(self.load_measurements_requested)
         self.file_menu.addAction(load_measurements_action)
 
@@ -318,9 +318,9 @@ class MainWindow(QMainWindow):
     def load_measurements_requested(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Load measurement bundle",
+            "Load CRISP measurement",
             self._dialog_start_path(LAST_MEASUREMENT_PATH_KEY),
-            "Measurement files (*.npz *.h5 *.hdf5);;NumPy measurement bundle (*.npz);;HDF5 recording (*.h5 *.hdf5)",
+            "CRISP HDF5 recordings (*.h5 *.hdf5)",
         )
         if not path:
             return
@@ -335,9 +335,9 @@ class MainWindow(QMainWindow):
                         return
                     h5_shot_index = dialog.selected_shot_index()
 
-            self.logic.load_measurements(path, h5_shot_index=h5_shot_index)
+            self.logic.load_crisp_measurements(path, h5_shot_index=h5_shot_index)
         except Exception as exc:
-            QMessageBox.critical(self, "Could not load measurements", str(exc))
+            QMessageBox.critical(self, "Could not load CRISP measurements", str(exc))
             return
 
         self._remember_path(path, LAST_MEASUREMENT_PATH_KEY)
@@ -348,13 +348,22 @@ class MainWindow(QMainWindow):
             self,
             "Load IR measurement",
             self._dialog_start_path(LAST_MEASUREMENT_PATH_KEY),
-            "IR measurement files (*.npz);;NumPy archive (*.npz)",
+            "IR measurement files (*.npz *.h5 *.hdf5);;NumPy archive (*.npz);;HDF5 recording (*.h5 *.hdf5)",
         )
         if not path:
             return
 
+        h5_shot_index = None
         try:
-            self.logic.replace_loaded_ocean_measurements(path)
+            if path.lower().endswith((".h5", ".hdf5")):
+                shots = list_h5_measurement_shots(path)
+                if len(shots) > 1:
+                    dialog = MeasurementTimeDialog(shots, self)
+                    if dialog.exec() != QDialog.DialogCode.Accepted:
+                        return
+                    h5_shot_index = dialog.selected_shot_index()
+
+            self.logic.load_ir_measurements(path, h5_shot_index=h5_shot_index)
         except Exception as exc:
             QMessageBox.critical(self, "Could not load IR measurement", str(exc))
             return

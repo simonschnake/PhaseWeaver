@@ -218,10 +218,23 @@ def test_main_window_exposes_file_actions_in_file_menu():
 
     assert window.file_menu.title() == "File"
     assert [action.text() for action in window.file_menu.actions()] == [
-        "Load Measurements...",
+        "Load CRISP...",
         "Load IR Measurement...",
         "Export Data...",
     ]
+
+
+def test_main_window_starts_without_loaded_measurements(tmp_path):
+    _app()
+    settings = _settings(tmp_path / "settings.ini")
+    settings.setValue("paths/last_measurement_path", str(tmp_path / "old.h5"))
+    settings.sync()
+
+    window = MainWindow(
+        settings=QSettings(str(settings.fileName()), QSettings.Format.IniFormat)
+    )
+
+    assert window.logic.loaded_measurements == ()
 
 
 def test_main_window_remembers_last_measurement_file(tmp_path):

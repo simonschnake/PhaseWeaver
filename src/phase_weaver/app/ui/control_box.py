@@ -58,7 +58,7 @@ class ControlBox(QGroupBox):
         n_ticks = int(round((max_v - min_v) / step))
         n_ticks = max(n_ticks, 1)
 
-        slider = QSlider(Qt.Horizontal)
+        slider = QSlider(Qt.Orientation.Horizontal)
         slider.setRange(0, n_ticks)
         slider.setProperty("_min_v", float(min_v))
         slider.setProperty("_step", float(step))

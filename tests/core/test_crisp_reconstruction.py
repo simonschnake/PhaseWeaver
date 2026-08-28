@@ -9,7 +9,6 @@ from phase_weaver.app.logic import load_measurements_h5
 from phase_weaver.core.crisp_reconstruction import (
     CrispReconstruction,
     CrispReconstructionConfig,
-    CrispReconstructionInput,
     _replace_modulus_outside_band,
     build_crisp_full_spectrum,
     center_maximum,
@@ -25,6 +24,23 @@ from phase_weaver.core.crisp_reconstruction import (
     preprocess_crisp_input,
     smooth_intermediate_ffsq,
 )
+from phase_weaver.core.measurement import SquaredMagnitudeMeasurement
+
+
+def _crisp_input(freq_hz, ffsq, *, ffsq_std=None, detection_limit=None, charge_c=None):
+    """Build a SquaredMagnitudeMeasurement, zero-filling missing std/det."""
+    ffsq = np.asarray(ffsq, dtype=float)
+    return SquaredMagnitudeMeasurement(
+        freq=freq_hz,
+        mag=ffsq,
+        mag_std=ffsq_std if ffsq_std is not None else np.zeros_like(ffsq),
+        detection_limit=(
+            detection_limit
+            if detection_limit is not None
+            else np.zeros_like(ffsq)
+        ),
+        charge_c=charge_c if charge_c is not None else 250e-12,
+    )
 
 
 def test_preprocess_sorts_masks_and_applies_bad_run_cutoff():
@@ -40,7 +56,7 @@ def test_preprocess_sorts_masks_and_applies_bad_run_cutoff():
     detection[-16:] = 0.0
 
     pre = preprocess_crisp_input(
-        CrispReconstructionInput(
+        _crisp_input(
             freq_hz=freq_hz,
             ffsq=ffsq,
             detection_limit=detection,
@@ -65,7 +81,7 @@ def test_preprocess_can_remove_explicit_detector_channels():
     )
 
     pre = preprocess_crisp_input(
-        CrispReconstructionInput(freq_hz=freq_hz, ffsq=ffsq),
+        _crisp_input(freq_hz=freq_hz, ffsq=ffsq),
         config,
     )
 
@@ -79,7 +95,7 @@ def test_gaussian_fits_and_extrapolation_are_finite():
     sigma = 12.0
     ffsq = np.exp(-0.5 * (freq / sigma) ** 2)
     pre = preprocess_crisp_input(
-        CrispReconstructionInput(freq_hz=freq * 1e12, ffsq=ffsq),
+        _crisp_input(freq_hz=freq * 1e12, ffsq=ffsq),
         CrispReconstructionConfig(min_input_points=100),
     )
 
@@ -104,7 +120,7 @@ def test_ocelot_low_frequency_fit_uses_weighted_magnitude_handoff():
     ffsq_std[1] = 10.0
     config = CrispReconstructionConfig(min_input_points=100)
     pre = preprocess_crisp_input(
-        CrispReconstructionInput(
+        _crisp_input(
             freq_hz=freq * 1e12,
             ffsq=ffsq,
             ffsq_std=ffsq_std,
@@ -147,7 +163,7 @@ def test_interpolated_error_uses_measurements_and_exact_extrapolation():
     supplied_std = 0.4 * ffsq
     config = CrispReconstructionConfig(min_input_points=100)
     pre = preprocess_crisp_input(
-        CrispReconstructionInput(
+        _crisp_input(
             freq_hz=freq * 1e12,
             ffsq=ffsq,
             ffsq_std=supplied_std,
@@ -180,7 +196,7 @@ def test_interpolated_error_includes_low_frequency_fit_uncertainty():
         max_frequency_thz=60.0,
     )
     pre = preprocess_crisp_input(
-        CrispReconstructionInput(
+        _crisp_input(
             freq_hz=freq * 1e12,
             ffsq=ffabs**2,
             ffsq_std=0.1 * ffabs**2,
@@ -259,7 +275,7 @@ def test_crisp_reconstruction_runs_on_synthetic_input():
     freq = np.linspace(0.5, 60.0, 160)
     ffsq = np.exp(-0.5 * (freq / 18.0) ** 2)
     alg = CrispReconstruction(
-        CrispReconstructionInput(
+        _crisp_input(
             freq_hz=freq * 1e12,
             ffsq=ffsq,
             charge_c=250e-12,
@@ -286,7 +302,7 @@ def test_gaussian_reconstruction_does_not_grow_long_artificial_tails():
         max_frequency_thz=500.0,
     )
     result = CrispReconstruction(
-        CrispReconstructionInput(
+        _crisp_input(
             freq_hz=freq * 1e12,
             ffsq=ffabs**2,
             ffsq_std=0.4 * ffabs**2,
@@ -318,10 +334,11 @@ def test_crisp_reconstruction_runs_on_reference_h5_when_available():
     current_a = result.profile.values * result.profile.charge
 
     with h5py.File(path, "r") as data:
+        shot_index = int(loaded[0].crisp_input.source.rsplit("=", 1)[1])
         reference = np.asarray(
             data[
                 "XFEL.SDIAG__THZ_SPECTROMETER.RECONSTRUCTION__CRD.1934.TL.SA1__CURRENT_PROFILE"
-            ][loaded[0].crisp_input.shot_index]
+            ][shot_index]
         )
 
     assert current_a.shape == reference.shape == (1024,)

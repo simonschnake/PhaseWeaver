@@ -9,26 +9,35 @@ from .base import (
 )
 from .crisp_simulation import (
     CrispSimulationConfig,
-    CrispSimulationResult,
     simulate_crisp_measurement,
+)
+from .measurement import (
+    CalibrationStatus,
+    Measurement,
+    MeasurementKind,
+    SquaredMagnitudeMeasurement,
 )
 from .ocean_simulation import (
     OceanSimulationConfig,
-    OceanSimulationResult,
     simulate_ocean_measurement,
 )
+from .pipeline import CrispThenIrSeed, ReconstructionPipeline
 
 __all__ = [
     "BandLimitedDCPhysicalRFFT",
-    "CurrentProfile",
+    "CalibrationStatus",
     "CrispSimulationConfig",
-    "CrispSimulationResult",
+    "CrispThenIrSeed",
+    "CurrentProfile",
     "DCPhysicalRFFT",
     "FormFactor",
     "Grid",
+    "Measurement",
+    "MeasurementKind",
     "OceanSimulationConfig",
-    "OceanSimulationResult",
     "Profile",
+    "ReconstructionPipeline",
+    "SquaredMagnitudeMeasurement",
     "Transform",
     "simulate_crisp_measurement",
     "simulate_ocean_measurement",
